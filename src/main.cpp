@@ -287,4 +287,5 @@ class $modify(BotPauseLayer, PauseLayer) {
     void onBot(CCObject*) { BotPopup::create()->show(); }
 };
 
+
 $on_mod(Loaded) { log::info("GD Bot loaded!"); }
