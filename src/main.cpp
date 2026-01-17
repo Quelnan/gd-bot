@@ -28,6 +28,7 @@ public:
     size_t nextIdx = 0;
     float bestX = 0.f;
     int fails = 0;
+    int attempts = 0;
 
     void reset() {
         nextIdx = 0;
@@ -41,15 +42,21 @@ public:
         actions.clear();
         bestX = 0.f;
         fails = 0;
+        attempts = 0;
         reset();
+        log::info("Bot: Pathfinding STARTED");
     }
 
     void startReplay() {
-        if (actions.empty()) return;
+        if (actions.empty()) {
+            log::info("Bot: No actions to replay!");
+            return;
+        }
         enabled = true;
         pathfinding = false;
         replaying = true;
         reset();
+        log::info("Bot: Replaying {} actions", actions.size());
     }
 
     void stop() {
@@ -57,6 +64,7 @@ public:
         pathfinding = false;
         replaying = false;
         holding = false;
+        log::info("Bot: Stopped");
     }
 
     bool addAction(float x, int type) {
@@ -66,12 +74,14 @@ public:
         actions.push_back({x, type});
         std::sort(actions.begin(), actions.end(),
             [](auto& a, auto& b) { return a.x < b.x; });
+        log::info("Bot: Added click at X={}", x);
         return true;
     }
 
     void removeNear(float x) {
         for (int i = actions.size() - 1; i >= 0; i--) {
             if (actions[i].x > x - 80.f && actions[i].x < x) {
+                log::info("Bot: Removed action at X={}", actions[i].x);
                 actions.erase(actions.begin() + i);
                 return;
             }
@@ -80,10 +90,14 @@ public:
 
     void onDeath(float x) {
         if (!pathfinding) return;
+        
+        attempts++;
+        log::info("Bot: Death at X={} (attempt {})", x, attempts);
 
         if (x > bestX + 2.f) {
             bestX = x;
             fails = 0;
+            log::info("Bot: NEW BEST! X={}", x);
         } else {
             fails++;
 
@@ -101,6 +115,7 @@ public:
                         [x](auto& a) { return a.x > x - 200.f; }),
                     actions.end());
                 fails = 0;
+                log::info("Bot: Reset section");
                 return;
             }
 
@@ -116,6 +131,7 @@ public:
             if (a.type == 0) {
                 p->pushButton(PlayerButton::Jump);
                 p->releaseButton(PlayerButton::Jump);
+                log::info("Bot: Click at X={}", a.x);
             } else if (a.type == 1) {
                 p->pushButton(PlayerButton::Jump);
                 holding = true;
@@ -143,6 +159,7 @@ public:
             if (i < actions.size() - 1) f << ",";
         }
         f << "]}";
+        log::info("Bot: Saved {} actions", actions.size());
     }
 
     void load() {
@@ -164,6 +181,15 @@ public:
 
         pos = s.find("\"best\":");
         if (pos != std::string::npos) bestX = std::stof(s.substr(pos + 7));
+        
+        log::info("Bot: Loaded {} actions, best={}", actions.size(), bestX);
+    }
+    
+    std::string getStatus() {
+        if (!enabled) return "OFF";
+        if (pathfinding) return "PATHFIND";
+        if (replaying) return "REPLAY";
+        return "ON";
     }
 };
 
@@ -194,14 +220,18 @@ class $modify(BotPlayLayer, PlayLayer) {
             bot->process(m_player1, m_player1->getPositionX());
         }
 
-        if (m_fields->label && bot->enabled) {
-            auto txt = fmt::format("{} | X:{:.0f} | Best:{:.0f} | Acts:{}",
-                bot->pathfinding ? "PATH" : "PLAY",
-                m_player1 ? m_player1->getPositionX() : 0.f,
-                bot->bestX, bot->actions.size());
-            m_fields->label->setString(txt.c_str());
-        } else if (m_fields->label) {
-            m_fields->label->setString("");
+        if (m_fields->label) {
+            if (bot->enabled) {
+                auto txt = fmt::format("[{}] X:{:.0f} | Best:{:.0f} | Clicks:{} | Try:{}",
+                    bot->getStatus(),
+                    m_player1 ? m_player1->getPositionX() : 0.f,
+                    bot->bestX, 
+                    bot->actions.size(),
+                    bot->attempts);
+                m_fields->label->setString(txt.c_str());
+            } else {
+                m_fields->label->setString("");
+            }
         }
     }
 
@@ -223,50 +253,105 @@ class $modify(BotPlayLayer, PlayLayer) {
 
 class BotPopup : public geode::Popup<> {
 protected:
+    CCLabelBMFont* statusLabel = nullptr;
+
     bool setup() override {
         setTitle("GD Bot");
         auto menu = CCMenu::create();
         menu->setPosition(getContentSize() / 2);
 
+        // Pathfind button
         auto btn1 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Pathfind"), this, menu_selector(BotPopup::onPath));
-        btn1->setPosition({0, 45});
+            ButtonSprite::create("Pathfind", "bigFont.fnt", "GJ_button_02.png", 0.8f), 
+            this, menu_selector(BotPopup::onPath));
+        btn1->setPosition({0, 50});
         menu->addChild(btn1);
 
+        // Replay button
         auto btn2 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Replay"), this, menu_selector(BotPopup::onReplay));
-        btn2->setPosition({0, 10});
+            ButtonSprite::create("Replay", "bigFont.fnt", "GJ_button_01.png", 0.8f), 
+            this, menu_selector(BotPopup::onReplay));
+        btn2->setPosition({0, 15});
         menu->addChild(btn2);
 
+        // Stop button
         auto btn3 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Stop"), this, menu_selector(BotPopup::onStop));
-        btn3->setPosition({0, -25});
+            ButtonSprite::create("Stop", "bigFont.fnt", "GJ_button_06.png", 0.8f), 
+            this, menu_selector(BotPopup::onStop));
+        btn3->setPosition({0, -20});
         menu->addChild(btn3);
 
+        // Save button
         auto btn4 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Save"), this, menu_selector(BotPopup::onSave));
-        btn4->setPosition({-45, -60});
+            ButtonSprite::create("Save", "bigFont.fnt", "GJ_button_03.png", 0.6f), 
+            this, menu_selector(BotPopup::onSave));
+        btn4->setPosition({-50, -55});
         menu->addChild(btn4);
 
+        // Load button
         auto btn5 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Load"), this, menu_selector(BotPopup::onLoad));
-        btn5->setPosition({45, -60});
+            ButtonSprite::create("Load", "bigFont.fnt", "GJ_button_03.png", 0.6f), 
+            this, menu_selector(BotPopup::onLoad));
+        btn5->setPosition({50, -55});
         menu->addChild(btn5);
+
+        // Status label
+        statusLabel = CCLabelBMFont::create("Status: OFF", "chatFont.fnt");
+        statusLabel->setPosition({0, -85});
+        statusLabel->setScale(0.7f);
+        menu->addChild(statusLabel);
+        
+        updateStatus();
 
         m_mainLayer->addChild(menu);
         return true;
     }
+    
+    void updateStatus() {
+        auto bot = Bot::get();
+        std::string status = fmt::format("Status: {} | Best: {:.0f} | Clicks: {}", 
+            bot->getStatus(), bot->bestX, bot->actions.size());
+        if (statusLabel) statusLabel->setString(status.c_str());
+    }
 
-    void onPath(CCObject*) { Bot::get()->startPathfind(); onClose(nullptr); }
-    void onReplay(CCObject*) { Bot::get()->startReplay(); onClose(nullptr); }
-    void onStop(CCObject*) { Bot::get()->stop(); }
-    void onSave(CCObject*) { Bot::get()->save(); FLAlertLayer::create("Bot", "Saved!", "OK")->show(); }
-    void onLoad(CCObject*) { Bot::get()->load(); FLAlertLayer::create("Bot", "Loaded!", "OK")->show(); }
+    void onPath(CCObject*) { 
+        Bot::get()->startPathfind(); 
+        FLAlertLayer::create("Bot", "Pathfinding started!\n\nResume and play the level.\nIt will learn from your deaths.", "OK")->show();
+        updateStatus();
+    }
+    
+    void onReplay(CCObject*) { 
+        auto bot = Bot::get();
+        if (bot->actions.empty()) {
+            FLAlertLayer::create("Bot", "No actions recorded!\n\nUse Pathfind first.", "OK")->show();
+            return;
+        }
+        bot->startReplay(); 
+        FLAlertLayer::create("Bot", fmt::format("Replaying {} clicks!\n\nResume the level.", bot->actions.size()), "OK")->show();
+        updateStatus();
+    }
+    
+    void onStop(CCObject*) { 
+        Bot::get()->stop(); 
+        FLAlertLayer::create("Bot", "Bot stopped.", "OK")->show();
+        updateStatus();
+    }
+    
+    void onSave(CCObject*) { 
+        Bot::get()->save(); 
+        FLAlertLayer::create("Bot", "Saved!", "OK")->show(); 
+    }
+    
+    void onLoad(CCObject*) { 
+        Bot::get()->load(); 
+        updateStatus();
+        FLAlertLayer::create("Bot", fmt::format("Loaded {} actions!", Bot::get()->actions.size()), "OK")->show(); 
+    }
 
 public:
     static BotPopup* create() {
         auto ret = new BotPopup();
-        if (ret && ret->initAnchored(200, 180)) { ret->autorelease(); return ret; }
+        if (ret && ret->initAnchored(220, 200)) { ret->autorelease(); return ret; }
         delete ret;
         return nullptr;
     }
@@ -275,17 +360,26 @@ public:
 class $modify(BotPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
+        
+        auto winSize = CCDirector::get()->getWinSize();
+        
         auto menu = CCMenu::create();
-        menu->setPosition({60, 60});
+        menu->setPosition({0, 0});
+        
         auto btn = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Bot", "bigFont.fnt", "GJ_button_01.png", 0.6f),
+            ButtonSprite::create("Bot", "bigFont.fnt", "GJ_button_01.png", 0.7f),
             this, menu_selector(BotPauseLayer::onBot));
+        btn->setPosition({winSize.width - 60, winSize.height - 30});
         menu->addChild(btn);
-        addChild(menu);
+        
+        addChild(menu, 100);
     }
 
-    void onBot(CCObject*) { BotPopup::create()->show(); }
+    void onBot(CCObject*) { 
+        BotPopup::create()->show(); 
+    }
 };
 
-
-$on_mod(Loaded) { log::info("GD Bot loaded!"); }
+$on_mod(Loaded) { 
+    log::info("GD Bot loaded successfully!"); 
+}
