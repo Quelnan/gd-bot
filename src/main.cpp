@@ -9,26 +9,12 @@
 
 using namespace geode::prelude;
 
-//===========================================
-//              ENUMS & STRUCTS
-//===========================================
-
 enum class GameMode {
-    Cube,
-    Ship,
-    Ball,
-    Ufo,
-    Wave,
-    Robot,
-    Spider,
-    Swing,
-    Unknown
+    Cube, Ship, Ball, Ufo, Wave, Robot, Spider, Swing, Unknown
 };
 
 enum class ActionType {
-    Click = 0,
-    Hold = 1,
-    Release = 2
+    Click = 0, Hold = 1, Release = 2
 };
 
 struct Action {
@@ -41,30 +27,15 @@ struct Action {
 struct PlayerState {
     float x;
     float y;
-    float velX;
     float velY;
     float rotation;
     bool onGround;
-    bool isHolding;
     bool isDead;
     bool isUpsideDown;
     bool isMini;
-    bool isDualMode;
     GameMode mode;
     float groundY;
 };
-
-struct Prediction {
-    float futureY;
-    float timeToGround;
-    float jumpHeight;
-    bool willHitCeiling;
-    bool willHitGround;
-};
-
-//===========================================
-//              BOT CLASS
-//===========================================
 
 class Bot {
 private:
@@ -76,40 +47,27 @@ public:
         return &instance;
     }
 
-    // State
     bool enabled = false;
     bool pathfinding = false;
     bool replaying = false;
     bool holding = false;
-    bool needsClick = false;
+    bool pendingRelease = false;
     
-    // Actions
     std::vector<Action> actions;
     std::vector<Action> bestActions;
     size_t nextIdx = 0;
     
-    // Learning
     float bestX = 0.f;
     float lastDeathX = 0.f;
     int fails = 0;
     int attempts = 0;
     std::vector<float> deathSpots;
     
-    // Player state cache
     PlayerState state;
     PlayerState lastState;
     
-    // Settings
-    float clickOffset = 25.f;
-    float holdThreshold = 0.3f;
-    
-    //===========================================
-    //              GAME MODE DETECTION
-    //===========================================
-    
     GameMode getGameMode(PlayerObject* player) {
         if (!player) return GameMode::Unknown;
-        
         if (player->m_isShip) return GameMode::Ship;
         if (player->m_isBall) return GameMode::Ball;
         if (player->m_isBird) return GameMode::Ufo;
@@ -141,10 +99,6 @@ public:
                mode == GameMode::Swing;
     }
     
-    //===========================================
-    //              STATE READING
-    //===========================================
-    
     void updateState(PlayerObject* player) {
         if (!player) return;
         
@@ -152,76 +106,23 @@ public:
         
         state.x = player->getPositionX();
         state.y = player->getPositionY();
-        state.velX = player->m_xVelocity;
         state.velY = player->m_yVelocity;
         state.rotation = player->getRotation();
         state.onGround = player->m_isOnGround;
-        state.isHolding = player->m_isHolding;
         state.isDead = player->m_isDead;
         state.isUpsideDown = player->m_isUpsideDown;
         state.isMini = player->m_vehicleSize < 1.0f;
         state.mode = getGameMode(player);
         
-        // Try to get ground Y
         if (state.onGround) {
             state.groundY = state.y;
         }
     }
     
-    //===========================================
-    //              TRAJECTORY PREDICTION
-    //===========================================
-    
-    Prediction predictTrajectory(PlayerObject* player, float deltaTime = 0.5f) {
-        Prediction pred;
-        pred.futureY = state.y;
-        pred.timeToGround = 0.f;
-        pred.jumpHeight = 0.f;
-        pred.willHitCeiling = false;
-        pred.willHitGround = false;
-        
-        if (!player) return pred;
-        
-        float gravity = player->m_gravity;
-        float velY = state.velY;
-        float y = state.y;
-        
-        // Simulate physics
-        float dt = 1.f / 60.f;
-        float time = 0.f;
-        float maxY = y;
-        
-        while (time < deltaTime) {
-            velY += gravity * dt;
-            y += velY * dt;
-            
-            if (y > maxY) maxY = y;
-            
-            // Check ground collision
-            if (y <= state.groundY && velY < 0) {
-                pred.willHitGround = true;
-                pred.timeToGround = time;
-                break;
-            }
-            
-            time += dt;
-        }
-        
-        pred.futureY = y;
-        pred.jumpHeight = maxY - state.groundY;
-        
-        return pred;
-    }
-    
-    //===========================================
-    //              SMART CLICK POSITION
-    //===========================================
-    
     float calculateClickPosition(float deathX, int failCount) {
         GameMode mode = state.mode;
         float baseOffset = 25.f;
         
-        // Adjust based on game mode
         switch (mode) {
             case GameMode::Cube:
             case GameMode::Robot:
@@ -242,7 +143,6 @@ public:
                 baseOffset = 25.f;
         }
         
-        // Vary position based on fail count
         float offset;
         switch (failCount) {
             case 1: offset = baseOffset; break;
@@ -250,10 +150,10 @@ public:
             case 3: offset = baseOffset * 0.5f; break;
             case 4: offset = baseOffset * 3; break;
             case 5: offset = baseOffset * 0.25f; break;
-            case 6: offset = -baseOffset * 0.5f; break; // Try after death
+            case 6: offset = -baseOffset * 0.5f; break;
             case 7: offset = baseOffset * 1.5f; break;
             case 8: offset = baseOffset * 2.5f; break;
-            default: offset = baseOffset * (failCount % 5 + 1) * 0.5f;
+            default: offset = baseOffset * ((failCount % 5) + 1) * 0.5f;
         }
         
         return deathX - offset;
@@ -263,7 +163,6 @@ public:
         GameMode mode = state.mode;
         
         if (needsHoldInput(mode)) {
-            // For ship/ufo/wave, alternate between hold and release
             bool hasRecentHold = false;
             for (auto& a : actions) {
                 if (a.x > x - 100 && a.x < x && a.type == ActionType::Hold) {
@@ -273,25 +172,16 @@ public:
                     hasRecentHold = false;
                 }
             }
-            
-            if (hasRecentHold) {
-                return ActionType::Release;
-            } else {
-                return ActionType::Hold;
-            }
+            return hasRecentHold ? ActionType::Release : ActionType::Hold;
         }
         
         return ActionType::Click;
     }
     
-    //===========================================
-    //              CORE FUNCTIONS
-    //===========================================
-    
     void reset() {
         nextIdx = 0;
         holding = false;
-        needsClick = false;
+        pendingRelease = false;
     }
     
     void startPathfind() {
@@ -332,12 +222,7 @@ public:
         log::info("Bot: Stopped");
     }
     
-    //===========================================
-    //              ACTION MANAGEMENT
-    //===========================================
-    
     bool addAction(float x, ActionType type, GameMode mode = GameMode::Cube) {
-        // Check duplicates
         for (auto& a : actions) {
             if (std::abs(a.x - x) < 5.f) return false;
         }
@@ -378,17 +263,12 @@ public:
         log::info("Bot: Cleared {} actions after X={:.0f}", before - actions.size(), x);
     }
     
-    //===========================================
-    //              LEARNING
-    //===========================================
-    
     void onDeath(float x, float y, PlayerObject* player) {
         if (!pathfinding) return;
         
         attempts++;
         deathSpots.push_back(x);
         
-        // Count deaths at this spot
         int deathsHere = 0;
         for (float spot : deathSpots) {
             if (std::abs(spot - x) < 30.f) deathsHere++;
@@ -397,7 +277,6 @@ public:
         log::info("Bot: Death #{} at X={:.0f} Y={:.0f} [{}] (deaths here: {})", 
             attempts, x, y, gameModeStr(state.mode), deathsHere);
         
-        // Progress?
         if (x > bestX + 2.f) {
             bestX = x;
             bestActions = actions;
@@ -414,7 +293,6 @@ public:
     void learnFromDeath(float deathX, float deathY, int deathsHere, PlayerObject* player) {
         GameMode mode = state.mode;
         
-        // Too many fails - reset section
         if (fails > 15 || deathsHere > 10) {
             clearAfter(deathX - 200.f);
             deathSpots.clear();
@@ -423,7 +301,6 @@ public:
             return;
         }
         
-        // Try removing problematic action
         if (fails == 7 || fails == 12) {
             if (removeNear(deathX)) {
                 fails = std::max(1, fails - 3);
@@ -431,45 +308,17 @@ public:
             }
         }
         
-        // Calculate new action position
         float newX = calculateClickPosition(deathX, fails);
         
         if (newX > 0.f) {
             ActionType type = determineActionType(newX);
             addAction(newX, type, mode);
             
-            // For hold modes, add a release after
             if (type == ActionType::Hold) {
                 float releaseX = deathX + 30.f + (fails * 10.f);
                 addAction(releaseX, ActionType::Release, mode);
             }
         }
-    }
-    
-    //===========================================
-    //              INPUT EXECUTION
-    //===========================================
-    
-    void executeClick(GJBaseGameLayer* layer, bool player1 = true) {
-        if (!layer) return;
-        
-        // Method 1: Direct button press
-        layer->handleButton(true, 1, player1);
-        
-        // Schedule release
-        needsClick = true;
-    }
-    
-    void executeRelease(GJBaseGameLayer* layer, bool player1 = true) {
-        if (!layer) return;
-        layer->handleButton(false, 1, player1);
-        holding = false;
-    }
-    
-    void executeHold(GJBaseGameLayer* layer, bool player1 = true) {
-        if (!layer) return;
-        layer->handleButton(true, 1, player1);
-        holding = true;
     }
     
     void processFrame(GJBaseGameLayer* layer, PlayerObject* player) {
@@ -478,28 +327,30 @@ public:
         updateState(player);
         float x = state.x;
         
-        // Handle pending click release
-        if (needsClick) {
+        // Handle pending release for clicks
+        if (pendingRelease) {
             layer->handleButton(false, 1, true);
-            needsClick = false;
+            pendingRelease = false;
         }
         
-        // Execute actions at X positions
         while (nextIdx < actions.size() && x >= actions[nextIdx].x) {
             Action& a = actions[nextIdx];
             
             switch (a.type) {
                 case ActionType::Click:
-                    executeClick(layer);
-                    log::info("Bot: Execute Click at X={:.0f}", a.x);
+                    layer->handleButton(true, 1, true);
+                    pendingRelease = true;
+                    log::info("Bot: Click at X={:.0f}", a.x);
                     break;
                 case ActionType::Hold:
-                    executeHold(layer);
-                    log::info("Bot: Execute Hold at X={:.0f}", a.x);
+                    layer->handleButton(true, 1, true);
+                    holding = true;
+                    log::info("Bot: Hold at X={:.0f}", a.x);
                     break;
                 case ActionType::Release:
-                    executeRelease(layer);
-                    log::info("Bot: Execute Release at X={:.0f}", a.x);
+                    layer->handleButton(false, 1, true);
+                    holding = false;
+                    log::info("Bot: Release at X={:.0f}", a.x);
                     break;
             }
             
@@ -512,12 +363,8 @@ public:
             layer->handleButton(false, 1, true);
             holding = false;
         }
-        needsClick = false;
+        pendingRelease = false;
     }
-    
-    //===========================================
-    //              SAVE/LOAD
-    //===========================================
     
     void save() {
         auto path = Mod::get()->getSaveDir() / "bot.json";
@@ -610,16 +457,6 @@ public:
     }
 };
 
-//===========================================
-//              HOOKS
-//===========================================
-
-class $modify(BotGameLayer, GJBaseGameLayer) {
-    void handleButton(bool push, int button, bool player1) {
-        GJBaseGameLayer::handleButton(push, button, player1);
-    }
-};
-
 class $modify(BotPlayLayer, PlayLayer) {
     struct Fields {
         CCLabelBMFont* label = nullptr;
@@ -680,7 +517,6 @@ class $modify(BotPlayLayer, PlayLayer) {
         auto bot = Bot::get();
         if (bot->enabled) {
             log::info("Bot: ★★★ LEVEL COMPLETE! ★★★");
-            log::info("Bot: Attempts: {}, Actions: {}", bot->attempts, bot->actions.size());
             bot->bestX = 999999.f;
             bot->bestActions = bot->actions;
             bot->save();
@@ -688,10 +524,6 @@ class $modify(BotPlayLayer, PlayLayer) {
         PlayLayer::levelComplete();
     }
 };
-
-//===========================================
-//              UI
-//===========================================
 
 class BotPopup : public geode::Popup<> {
 protected:
@@ -703,49 +535,42 @@ protected:
         auto menu = CCMenu::create();
         menu->setPosition(getContentSize() / 2);
 
-        // Pathfind
         auto btn1 = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Pathfind", "bigFont.fnt", "GJ_button_02.png", 0.75f),
             this, menu_selector(BotPopup::onPath));
         btn1->setPosition({0, 55});
         menu->addChild(btn1);
 
-        // Replay
         auto btn2 = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Replay", "bigFont.fnt", "GJ_button_01.png", 0.75f),
             this, menu_selector(BotPopup::onReplay));
         btn2->setPosition({0, 20});
         menu->addChild(btn2);
 
-        // Stop
         auto btn3 = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Stop", "bigFont.fnt", "GJ_button_06.png", 0.75f),
             this, menu_selector(BotPopup::onStop));
         btn3->setPosition({0, -15});
         menu->addChild(btn3);
 
-        // Save
         auto btn4 = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Save", "bigFont.fnt", "GJ_button_03.png", 0.6f),
             this, menu_selector(BotPopup::onSave));
         btn4->setPosition({-55, -50});
         menu->addChild(btn4);
 
-        // Load
         auto btn5 = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Load", "bigFont.fnt", "GJ_button_03.png", 0.6f),
             this, menu_selector(BotPopup::onLoad));
         btn5->setPosition({55, -50});
         menu->addChild(btn5);
         
-        // Clear
         auto btn6 = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Clear", "bigFont.fnt", "GJ_button_06.png", 0.5f),
             this, menu_selector(BotPopup::onClear));
         btn6->setPosition({0, -50});
         menu->addChild(btn6);
 
-        // Status
         statusLabel = CCLabelBMFont::create("", "chatFont.fnt");
         statusLabel->setPosition({0, -80});
         statusLabel->setScale(0.6f);
@@ -773,12 +598,7 @@ protected:
         Bot::get()->startPathfind();
         FLAlertLayer::create(
             "Pathfind Started",
-            "Resume the level and play!\n\n"
-            "The bot will:\n"
-            "- Learn from each death\n"
-            "- Add clicks before obstacles\n"
-            "- Handle all game modes\n"
-            "- Adapt to ship/wave/ufo",
+            "Resume and play!\nBot will learn from deaths.",
             "OK"
         )->show();
         updateStatus();
@@ -787,15 +607,11 @@ protected:
     void onReplay(CCObject*) {
         auto bot = Bot::get();
         if (bot->actions.empty() && bot->bestActions.empty()) {
-            FLAlertLayer::create("Error", "No actions recorded!\nUse Pathfind first.", "OK")->show();
+            FLAlertLayer::create("Error", "No actions!\nPathfind first.", "OK")->show();
             return;
         }
         bot->startReplay();
-        FLAlertLayer::create(
-            "Replay Started",
-            fmt::format("Playing {} actions\nResume the level!", bot->actions.size()),
-            "OK"
-        )->show();
+        FLAlertLayer::create("Replay Started", "Resume the level!", "OK")->show();
         updateStatus();
     }
     
@@ -812,11 +628,7 @@ protected:
     void onLoad(CCObject*) {
         Bot::get()->load();
         updateStatus();
-        FLAlertLayer::create(
-            "Loaded",
-            fmt::format("Loaded {} actions\nBest: {:.0f}", Bot::get()->actions.size(), Bot::get()->bestX),
-            "OK"
-        )->show();
+        FLAlertLayer::create("Loaded", fmt::format("Loaded {} actions!", Bot::get()->actions.size()), "OK")->show();
     }
     
     void onClear(CCObject*) {
@@ -829,7 +641,7 @@ protected:
         bot->fails = 0;
         bot->reset();
         updateStatus();
-        FLAlertLayer::create("Cleared", "All bot data cleared!", "OK")->show();
+        FLAlertLayer::create("Cleared", "All data cleared!", "OK")->show();
     }
 
 public:
