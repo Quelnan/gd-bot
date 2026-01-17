@@ -1,55 +1,320 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 #include <vector>
 #include <fstream>
+#include <cmath>
 
 using namespace geode::prelude;
 
-struct Action {
-    float x;
-    int type;
+//===========================================
+//              ENUMS & STRUCTS
+//===========================================
+
+enum class GameMode {
+    Cube,
+    Ship,
+    Ball,
+    Ufo,
+    Wave,
+    Robot,
+    Spider,
+    Swing,
+    Unknown
 };
 
+enum class ActionType {
+    Click = 0,
+    Hold = 1,
+    Release = 2
+};
+
+struct Action {
+    float x;
+    ActionType type;
+    GameMode mode;
+    float y;
+};
+
+struct PlayerState {
+    float x;
+    float y;
+    float velX;
+    float velY;
+    float rotation;
+    bool onGround;
+    bool isHolding;
+    bool isDead;
+    bool isUpsideDown;
+    bool isMini;
+    bool isDualMode;
+    GameMode mode;
+    float groundY;
+};
+
+struct Prediction {
+    float futureY;
+    float timeToGround;
+    float jumpHeight;
+    bool willHitCeiling;
+    bool willHitGround;
+};
+
+//===========================================
+//              BOT CLASS
+//===========================================
+
 class Bot {
+private:
+    Bot() = default;
+
 public:
     static Bot* get() {
         static Bot instance;
         return &instance;
     }
 
+    // State
     bool enabled = false;
     bool pathfinding = false;
     bool replaying = false;
     bool holding = false;
-
+    bool needsClick = false;
+    
+    // Actions
     std::vector<Action> actions;
+    std::vector<Action> bestActions;
     size_t nextIdx = 0;
+    
+    // Learning
     float bestX = 0.f;
+    float lastDeathX = 0.f;
     int fails = 0;
     int attempts = 0;
-
+    std::vector<float> deathSpots;
+    
+    // Player state cache
+    PlayerState state;
+    PlayerState lastState;
+    
+    // Settings
+    float clickOffset = 25.f;
+    float holdThreshold = 0.3f;
+    
+    //===========================================
+    //              GAME MODE DETECTION
+    //===========================================
+    
+    GameMode getGameMode(PlayerObject* player) {
+        if (!player) return GameMode::Unknown;
+        
+        if (player->m_isShip) return GameMode::Ship;
+        if (player->m_isBall) return GameMode::Ball;
+        if (player->m_isBird) return GameMode::Ufo;
+        if (player->m_isDart) return GameMode::Wave;
+        if (player->m_isRobot) return GameMode::Robot;
+        if (player->m_isSpider) return GameMode::Spider;
+        if (player->m_isSwing) return GameMode::Swing;
+        return GameMode::Cube;
+    }
+    
+    std::string gameModeStr(GameMode mode) {
+        switch (mode) {
+            case GameMode::Cube: return "Cube";
+            case GameMode::Ship: return "Ship";
+            case GameMode::Ball: return "Ball";
+            case GameMode::Ufo: return "UFO";
+            case GameMode::Wave: return "Wave";
+            case GameMode::Robot: return "Robot";
+            case GameMode::Spider: return "Spider";
+            case GameMode::Swing: return "Swing";
+            default: return "???";
+        }
+    }
+    
+    bool needsHoldInput(GameMode mode) {
+        return mode == GameMode::Ship || 
+               mode == GameMode::Ufo || 
+               mode == GameMode::Wave ||
+               mode == GameMode::Swing;
+    }
+    
+    //===========================================
+    //              STATE READING
+    //===========================================
+    
+    void updateState(PlayerObject* player) {
+        if (!player) return;
+        
+        lastState = state;
+        
+        state.x = player->getPositionX();
+        state.y = player->getPositionY();
+        state.velX = player->m_xVelocity;
+        state.velY = player->m_yVelocity;
+        state.rotation = player->getRotation();
+        state.onGround = player->m_isOnGround;
+        state.isHolding = player->m_isHolding;
+        state.isDead = player->m_isDead;
+        state.isUpsideDown = player->m_isUpsideDown;
+        state.isMini = player->m_vehicleSize < 1.0f;
+        state.mode = getGameMode(player);
+        
+        // Try to get ground Y
+        if (state.onGround) {
+            state.groundY = state.y;
+        }
+    }
+    
+    //===========================================
+    //              TRAJECTORY PREDICTION
+    //===========================================
+    
+    Prediction predictTrajectory(PlayerObject* player, float deltaTime = 0.5f) {
+        Prediction pred;
+        pred.futureY = state.y;
+        pred.timeToGround = 0.f;
+        pred.jumpHeight = 0.f;
+        pred.willHitCeiling = false;
+        pred.willHitGround = false;
+        
+        if (!player) return pred;
+        
+        float gravity = player->m_gravity;
+        float velY = state.velY;
+        float y = state.y;
+        
+        // Simulate physics
+        float dt = 1.f / 60.f;
+        float time = 0.f;
+        float maxY = y;
+        
+        while (time < deltaTime) {
+            velY += gravity * dt;
+            y += velY * dt;
+            
+            if (y > maxY) maxY = y;
+            
+            // Check ground collision
+            if (y <= state.groundY && velY < 0) {
+                pred.willHitGround = true;
+                pred.timeToGround = time;
+                break;
+            }
+            
+            time += dt;
+        }
+        
+        pred.futureY = y;
+        pred.jumpHeight = maxY - state.groundY;
+        
+        return pred;
+    }
+    
+    //===========================================
+    //              SMART CLICK POSITION
+    //===========================================
+    
+    float calculateClickPosition(float deathX, int failCount) {
+        GameMode mode = state.mode;
+        float baseOffset = 25.f;
+        
+        // Adjust based on game mode
+        switch (mode) {
+            case GameMode::Cube:
+            case GameMode::Robot:
+                baseOffset = 30.f;
+                break;
+            case GameMode::Ship:
+            case GameMode::Ufo:
+                baseOffset = 50.f;
+                break;
+            case GameMode::Wave:
+                baseOffset = 20.f;
+                break;
+            case GameMode::Ball:
+            case GameMode::Spider:
+                baseOffset = 35.f;
+                break;
+            default:
+                baseOffset = 25.f;
+        }
+        
+        // Vary position based on fail count
+        float offset;
+        switch (failCount) {
+            case 1: offset = baseOffset; break;
+            case 2: offset = baseOffset * 2; break;
+            case 3: offset = baseOffset * 0.5f; break;
+            case 4: offset = baseOffset * 3; break;
+            case 5: offset = baseOffset * 0.25f; break;
+            case 6: offset = -baseOffset * 0.5f; break; // Try after death
+            case 7: offset = baseOffset * 1.5f; break;
+            case 8: offset = baseOffset * 2.5f; break;
+            default: offset = baseOffset * (failCount % 5 + 1) * 0.5f;
+        }
+        
+        return deathX - offset;
+    }
+    
+    ActionType determineActionType(float x) {
+        GameMode mode = state.mode;
+        
+        if (needsHoldInput(mode)) {
+            // For ship/ufo/wave, alternate between hold and release
+            bool hasRecentHold = false;
+            for (auto& a : actions) {
+                if (a.x > x - 100 && a.x < x && a.type == ActionType::Hold) {
+                    hasRecentHold = true;
+                }
+                if (a.x > x - 50 && a.x < x && a.type == ActionType::Release) {
+                    hasRecentHold = false;
+                }
+            }
+            
+            if (hasRecentHold) {
+                return ActionType::Release;
+            } else {
+                return ActionType::Hold;
+            }
+        }
+        
+        return ActionType::Click;
+    }
+    
+    //===========================================
+    //              CORE FUNCTIONS
+    //===========================================
+    
     void reset() {
         nextIdx = 0;
         holding = false;
+        needsClick = false;
     }
-
+    
     void startPathfind() {
         enabled = true;
         pathfinding = true;
         replaying = false;
         actions.clear();
+        bestActions.clear();
+        deathSpots.clear();
         bestX = 0.f;
+        lastDeathX = 0.f;
         fails = 0;
         attempts = 0;
         reset();
-        log::info("Bot: Pathfinding STARTED");
+        log::info("Bot: Pathfinding started");
     }
-
+    
     void startReplay() {
+        if (actions.empty() && !bestActions.empty()) {
+            actions = bestActions;
+        }
         if (actions.empty()) {
-            log::info("Bot: No actions to replay!");
+            log::warn("Bot: No actions to replay");
             return;
         }
         enabled = true;
@@ -58,7 +323,7 @@ public:
         reset();
         log::info("Bot: Replaying {} actions", actions.size());
     }
-
+    
     void stop() {
         enabled = false;
         pathfinding = false;
@@ -66,130 +331,292 @@ public:
         holding = false;
         log::info("Bot: Stopped");
     }
-
-    bool addAction(float x, int type) {
+    
+    //===========================================
+    //              ACTION MANAGEMENT
+    //===========================================
+    
+    bool addAction(float x, ActionType type, GameMode mode = GameMode::Cube) {
+        // Check duplicates
         for (auto& a : actions) {
             if (std::abs(a.x - x) < 5.f) return false;
         }
-        actions.push_back({x, type});
+        
+        Action action;
+        action.x = x;
+        action.type = type;
+        action.mode = mode;
+        action.y = state.y;
+        
+        actions.push_back(action);
         std::sort(actions.begin(), actions.end(),
-            [](auto& a, auto& b) { return a.x < b.x; });
-        log::info("Bot: Added click at X={}", x);
+            [](const Action& a, const Action& b) { return a.x < b.x; });
+        
+        log::info("Bot: Added {} at X={:.0f} [{}]", 
+            type == ActionType::Click ? "Click" : (type == ActionType::Hold ? "Hold" : "Release"),
+            x, gameModeStr(mode));
         return true;
     }
-
-    void removeNear(float x) {
+    
+    bool removeNear(float x, float range = 80.f) {
         for (int i = actions.size() - 1; i >= 0; i--) {
-            if (actions[i].x > x - 80.f && actions[i].x < x) {
-                log::info("Bot: Removed action at X={}", actions[i].x);
+            if (actions[i].x > x - range && actions[i].x < x) {
+                log::info("Bot: Removed action at X={:.0f}", actions[i].x);
                 actions.erase(actions.begin() + i);
-                return;
+                return true;
             }
         }
+        return false;
     }
-
-    void onDeath(float x) {
+    
+    void clearAfter(float x) {
+        size_t before = actions.size();
+        actions.erase(
+            std::remove_if(actions.begin(), actions.end(),
+                [x](const Action& a) { return a.x >= x; }),
+            actions.end());
+        log::info("Bot: Cleared {} actions after X={:.0f}", before - actions.size(), x);
+    }
+    
+    //===========================================
+    //              LEARNING
+    //===========================================
+    
+    void onDeath(float x, float y, PlayerObject* player) {
         if (!pathfinding) return;
         
         attempts++;
-        log::info("Bot: Death at X={} (attempt {})", x, attempts);
-
+        deathSpots.push_back(x);
+        
+        // Count deaths at this spot
+        int deathsHere = 0;
+        for (float spot : deathSpots) {
+            if (std::abs(spot - x) < 30.f) deathsHere++;
+        }
+        
+        log::info("Bot: Death #{} at X={:.0f} Y={:.0f} [{}] (deaths here: {})", 
+            attempts, x, y, gameModeStr(state.mode), deathsHere);
+        
+        // Progress?
         if (x > bestX + 2.f) {
             bestX = x;
+            bestActions = actions;
             fails = 0;
-            log::info("Bot: NEW BEST! X={}", x);
+            log::info("Bot: ★ NEW BEST: {:.0f}", x);
         } else {
             fails++;
-
-            float newX = 0.f;
-            if (fails == 1) newX = x - 25.f;
-            else if (fails == 2) newX = x - 50.f;
-            else if (fails == 3) newX = x - 15.f;
-            else if (fails == 4) newX = x - 70.f;
-            else if (fails == 5) newX = x - 8.f;
-            else if (fails == 6) { removeNear(x); fails = 1; return; }
-            else if (fails == 7) newX = x + 5.f;
-            else if (fails > 10) {
-                actions.erase(
-                    std::remove_if(actions.begin(), actions.end(),
-                        [x](auto& a) { return a.x > x - 200.f; }),
-                    actions.end());
-                fails = 0;
-                log::info("Bot: Reset section");
+            learnFromDeath(x, y, deathsHere, player);
+        }
+        
+        lastDeathX = x;
+    }
+    
+    void learnFromDeath(float deathX, float deathY, int deathsHere, PlayerObject* player) {
+        GameMode mode = state.mode;
+        
+        // Too many fails - reset section
+        if (fails > 15 || deathsHere > 10) {
+            clearAfter(deathX - 200.f);
+            deathSpots.clear();
+            fails = 0;
+            log::info("Bot: Reset section - too many fails");
+            return;
+        }
+        
+        // Try removing problematic action
+        if (fails == 7 || fails == 12) {
+            if (removeNear(deathX)) {
+                fails = std::max(1, fails - 3);
                 return;
             }
-
-            if (newX > 0.f) addAction(newX, 0);
+        }
+        
+        // Calculate new action position
+        float newX = calculateClickPosition(deathX, fails);
+        
+        if (newX > 0.f) {
+            ActionType type = determineActionType(newX);
+            addAction(newX, type, mode);
+            
+            // For hold modes, add a release after
+            if (type == ActionType::Hold) {
+                float releaseX = deathX + 30.f + (fails * 10.f);
+                addAction(releaseX, ActionType::Release, mode);
+            }
         }
     }
-
-    void process(PlayerObject* p, float x) {
-        if (!enabled || !p) return;
-
+    
+    //===========================================
+    //              INPUT EXECUTION
+    //===========================================
+    
+    void executeClick(GJBaseGameLayer* layer, bool player1 = true) {
+        if (!layer) return;
+        
+        // Method 1: Direct button press
+        layer->handleButton(true, 1, player1);
+        
+        // Schedule release
+        needsClick = true;
+    }
+    
+    void executeRelease(GJBaseGameLayer* layer, bool player1 = true) {
+        if (!layer) return;
+        layer->handleButton(false, 1, player1);
+        holding = false;
+    }
+    
+    void executeHold(GJBaseGameLayer* layer, bool player1 = true) {
+        if (!layer) return;
+        layer->handleButton(true, 1, player1);
+        holding = true;
+    }
+    
+    void processFrame(GJBaseGameLayer* layer, PlayerObject* player) {
+        if (!enabled || !layer || !player || player->m_isDead) return;
+        
+        updateState(player);
+        float x = state.x;
+        
+        // Handle pending click release
+        if (needsClick) {
+            layer->handleButton(false, 1, true);
+            needsClick = false;
+        }
+        
+        // Execute actions at X positions
         while (nextIdx < actions.size() && x >= actions[nextIdx].x) {
-            auto& a = actions[nextIdx];
-            if (a.type == 0) {
-                p->pushButton(PlayerButton::Jump);
-                p->releaseButton(PlayerButton::Jump);
-                log::info("Bot: Click at X={}", a.x);
-            } else if (a.type == 1) {
-                p->pushButton(PlayerButton::Jump);
-                holding = true;
-            } else {
-                p->releaseButton(PlayerButton::Jump);
-                holding = false;
+            Action& a = actions[nextIdx];
+            
+            switch (a.type) {
+                case ActionType::Click:
+                    executeClick(layer);
+                    log::info("Bot: Execute Click at X={:.0f}", a.x);
+                    break;
+                case ActionType::Hold:
+                    executeHold(layer);
+                    log::info("Bot: Execute Hold at X={:.0f}", a.x);
+                    break;
+                case ActionType::Release:
+                    executeRelease(layer);
+                    log::info("Bot: Execute Release at X={:.0f}", a.x);
+                    break;
             }
+            
             nextIdx++;
         }
     }
-
-    void release(PlayerObject* p) {
-        if (p && holding) {
-            p->releaseButton(PlayerButton::Jump);
+    
+    void forceRelease(GJBaseGameLayer* layer) {
+        if (layer && holding) {
+            layer->handleButton(false, 1, true);
             holding = false;
         }
+        needsClick = false;
     }
-
+    
+    //===========================================
+    //              SAVE/LOAD
+    //===========================================
+    
     void save() {
         auto path = Mod::get()->getSaveDir() / "bot.json";
         std::ofstream f(path);
-        f << "{\"best\":" << bestX << ",\"actions\":[";
+        
+        f << "{\n";
+        f << "  \"best\": " << bestX << ",\n";
+        f << "  \"attempts\": " << attempts << ",\n";
+        f << "  \"actions\": [\n";
+        
         for (size_t i = 0; i < actions.size(); i++) {
-            f << "{\"x\":" << actions[i].x << ",\"t\":" << actions[i].type << "}";
+            f << "    {\"x\": " << actions[i].x 
+              << ", \"t\": " << static_cast<int>(actions[i].type)
+              << ", \"m\": " << static_cast<int>(actions[i].mode)
+              << ", \"y\": " << actions[i].y << "}";
             if (i < actions.size() - 1) f << ",";
+            f << "\n";
         }
-        f << "]}";
-        log::info("Bot: Saved {} actions", actions.size());
+        
+        f << "  ]\n}\n";
+        
+        log::info("Bot: Saved {} actions, best={:.0f}", actions.size(), bestX);
     }
-
+    
     void load() {
         auto path = Mod::get()->getSaveDir() / "bot.json";
         std::ifstream f(path);
         if (!f) return;
-
+        
         std::string s((std::istreambuf_iterator<char>(f)), {});
         actions.clear();
-
+        
         size_t pos = 0;
         while ((pos = s.find("\"x\":", pos)) != std::string::npos) {
+            Action a;
             pos += 4;
-            float x = std::stof(s.substr(pos));
+            a.x = std::stof(s.substr(pos));
+            
             pos = s.find("\"t\":", pos) + 4;
-            int t = std::stoi(s.substr(pos));
-            actions.push_back({x, t});
+            a.type = static_cast<ActionType>(std::stoi(s.substr(pos)));
+            
+            size_t mpos = s.find("\"m\":", pos);
+            if (mpos != std::string::npos && mpos < s.find("}", pos)) {
+                pos = mpos + 4;
+                a.mode = static_cast<GameMode>(std::stoi(s.substr(pos)));
+            } else {
+                a.mode = GameMode::Cube;
+            }
+            
+            size_t ypos = s.find("\"y\":", pos);
+            if (ypos != std::string::npos && ypos < s.find("}", pos)) {
+                pos = ypos + 4;
+                a.y = std::stof(s.substr(pos));
+            } else {
+                a.y = 0.f;
+            }
+            
+            actions.push_back(a);
         }
-
+        
         pos = s.find("\"best\":");
         if (pos != std::string::npos) bestX = std::stof(s.substr(pos + 7));
         
-        log::info("Bot: Loaded {} actions, best={}", actions.size(), bestX);
+        pos = s.find("\"attempts\":");
+        if (pos != std::string::npos) attempts = std::stoi(s.substr(pos + 11));
+        
+        bestActions = actions;
+        
+        log::info("Bot: Loaded {} actions, best={:.0f}", actions.size(), bestX);
     }
     
     std::string getStatus() {
         if (!enabled) return "OFF";
-        if (pathfinding) return "PATHFIND";
-        if (replaying) return "REPLAY";
+        if (pathfinding) return "PATH";
+        if (replaying) return "PLAY";
         return "ON";
+    }
+    
+    std::string getDetailedStatus() {
+        return fmt::format(
+            "[{}] X:{:.0f} | Best:{:.0f} | Acts:{} | Try:{} | {}{}",
+            getStatus(),
+            state.x,
+            bestX,
+            actions.size(),
+            attempts,
+            gameModeStr(state.mode),
+            holding ? " [HOLD]" : ""
+        );
+    }
+};
+
+//===========================================
+//              HOOKS
+//===========================================
+
+class $modify(BotGameLayer, GJBaseGameLayer) {
+    void handleButton(bool push, int button, bool player1) {
+        GJBaseGameLayer::handleButton(push, button, player1);
     }
 };
 
@@ -200,13 +627,15 @@ class $modify(BotPlayLayer, PlayLayer) {
 
     bool init(GJGameLevel* level, bool a, bool b) {
         if (!PlayLayer::init(level, a, b)) return false;
+        
         Bot::get()->reset();
 
         m_fields->label = CCLabelBMFont::create("", "chatFont.fnt");
         m_fields->label->setAnchorPoint({0, 1});
         m_fields->label->setPosition({5, CCDirector::get()->getWinSize().height - 5});
-        m_fields->label->setScale(0.6f);
-        m_fields->label->setZOrder(999);
+        m_fields->label->setScale(0.5f);
+        m_fields->label->setZOrder(9999);
+        m_fields->label->setOpacity(200);
         addChild(m_fields->label);
 
         return true;
@@ -214,21 +643,17 @@ class $modify(BotPlayLayer, PlayLayer) {
 
     void update(float dt) {
         PlayLayer::update(dt);
+        
         auto bot = Bot::get();
 
         if (m_player1 && !m_player1->m_isDead) {
-            bot->process(m_player1, m_player1->getPositionX());
+            bot->processFrame(this, m_player1);
         }
 
         if (m_fields->label) {
             if (bot->enabled) {
-                auto txt = fmt::format("[{}] X:{:.0f} | Best:{:.0f} | Clicks:{} | Try:{}",
-                    bot->getStatus(),
-                    m_player1 ? m_player1->getPositionX() : 0.f,
-                    bot->bestX, 
-                    bot->actions.size(),
-                    bot->attempts);
-                m_fields->label->setString(txt.c_str());
+                m_fields->label->setString(bot->getDetailedStatus().c_str());
+                m_fields->label->setColor(bot->pathfinding ? ccc3(100, 255, 100) : ccc3(100, 200, 255));
             } else {
                 m_fields->label->setString("");
             }
@@ -237,121 +662,180 @@ class $modify(BotPlayLayer, PlayLayer) {
 
     void resetLevel() {
         auto bot = Bot::get();
-        if (m_player1) bot->release(m_player1);
+        bot->forceRelease(this);
         bot->reset();
         PlayLayer::resetLevel();
     }
 
     void destroyPlayer(PlayerObject* p, GameObject* o) {
         if (p == m_player1) {
-            Bot::get()->onDeath(p->getPositionX());
-            Bot::get()->release(p);
+            auto bot = Bot::get();
+            bot->onDeath(p->getPositionX(), p->getPositionY(), p);
+            bot->forceRelease(this);
         }
         PlayLayer::destroyPlayer(p, o);
     }
+    
+    void levelComplete() {
+        auto bot = Bot::get();
+        if (bot->enabled) {
+            log::info("Bot: ★★★ LEVEL COMPLETE! ★★★");
+            log::info("Bot: Attempts: {}, Actions: {}", bot->attempts, bot->actions.size());
+            bot->bestX = 999999.f;
+            bot->bestActions = bot->actions;
+            bot->save();
+        }
+        PlayLayer::levelComplete();
+    }
 };
+
+//===========================================
+//              UI
+//===========================================
 
 class BotPopup : public geode::Popup<> {
 protected:
     CCLabelBMFont* statusLabel = nullptr;
 
     bool setup() override {
-        setTitle("GD Bot");
+        setTitle("Smart GD Bot");
+        
         auto menu = CCMenu::create();
         menu->setPosition(getContentSize() / 2);
 
-        // Pathfind button
+        // Pathfind
         auto btn1 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Pathfind", "bigFont.fnt", "GJ_button_02.png", 0.8f), 
+            ButtonSprite::create("Pathfind", "bigFont.fnt", "GJ_button_02.png", 0.75f),
             this, menu_selector(BotPopup::onPath));
-        btn1->setPosition({0, 50});
+        btn1->setPosition({0, 55});
         menu->addChild(btn1);
 
-        // Replay button
+        // Replay
         auto btn2 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Replay", "bigFont.fnt", "GJ_button_01.png", 0.8f), 
+            ButtonSprite::create("Replay", "bigFont.fnt", "GJ_button_01.png", 0.75f),
             this, menu_selector(BotPopup::onReplay));
-        btn2->setPosition({0, 15});
+        btn2->setPosition({0, 20});
         menu->addChild(btn2);
 
-        // Stop button
+        // Stop
         auto btn3 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Stop", "bigFont.fnt", "GJ_button_06.png", 0.8f), 
+            ButtonSprite::create("Stop", "bigFont.fnt", "GJ_button_06.png", 0.75f),
             this, menu_selector(BotPopup::onStop));
-        btn3->setPosition({0, -20});
+        btn3->setPosition({0, -15});
         menu->addChild(btn3);
 
-        // Save button
+        // Save
         auto btn4 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Save", "bigFont.fnt", "GJ_button_03.png", 0.6f), 
+            ButtonSprite::create("Save", "bigFont.fnt", "GJ_button_03.png", 0.6f),
             this, menu_selector(BotPopup::onSave));
-        btn4->setPosition({-50, -55});
+        btn4->setPosition({-55, -50});
         menu->addChild(btn4);
 
-        // Load button
+        // Load
         auto btn5 = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Load", "bigFont.fnt", "GJ_button_03.png", 0.6f), 
+            ButtonSprite::create("Load", "bigFont.fnt", "GJ_button_03.png", 0.6f),
             this, menu_selector(BotPopup::onLoad));
-        btn5->setPosition({50, -55});
+        btn5->setPosition({55, -50});
         menu->addChild(btn5);
+        
+        // Clear
+        auto btn6 = CCMenuItemSpriteExtra::create(
+            ButtonSprite::create("Clear", "bigFont.fnt", "GJ_button_06.png", 0.5f),
+            this, menu_selector(BotPopup::onClear));
+        btn6->setPosition({0, -50});
+        menu->addChild(btn6);
 
-        // Status label
-        statusLabel = CCLabelBMFont::create("Status: OFF", "chatFont.fnt");
-        statusLabel->setPosition({0, -85});
-        statusLabel->setScale(0.7f);
+        // Status
+        statusLabel = CCLabelBMFont::create("", "chatFont.fnt");
+        statusLabel->setPosition({0, -80});
+        statusLabel->setScale(0.6f);
         menu->addChild(statusLabel);
         
         updateStatus();
 
         m_mainLayer->addChild(menu);
+        
+        schedule(schedule_selector(BotPopup::updateStatus), 0.5f);
+        
         return true;
     }
     
-    void updateStatus() {
+    void updateStatus(float dt = 0) {
         auto bot = Bot::get();
-        std::string status = fmt::format("Status: {} | Best: {:.0f} | Clicks: {}", 
-            bot->getStatus(), bot->bestX, bot->actions.size());
-        if (statusLabel) statusLabel->setString(status.c_str());
+        std::string s = fmt::format(
+            "{} | Best: {:.0f}\nActions: {} | Attempts: {}",
+            bot->getStatus(), bot->bestX, bot->actions.size(), bot->attempts
+        );
+        if (statusLabel) statusLabel->setString(s.c_str());
     }
 
-    void onPath(CCObject*) { 
-        Bot::get()->startPathfind(); 
-        FLAlertLayer::create("Bot", "Pathfinding started!\n\nResume and play the level.\nIt will learn from your deaths.", "OK")->show();
+    void onPath(CCObject*) {
+        Bot::get()->startPathfind();
+        FLAlertLayer::create(
+            "Pathfind Started",
+            "Resume the level and play!\n\n"
+            "The bot will:\n"
+            "- Learn from each death\n"
+            "- Add clicks before obstacles\n"
+            "- Handle all game modes\n"
+            "- Adapt to ship/wave/ufo",
+            "OK"
+        )->show();
         updateStatus();
     }
     
-    void onReplay(CCObject*) { 
+    void onReplay(CCObject*) {
         auto bot = Bot::get();
-        if (bot->actions.empty()) {
-            FLAlertLayer::create("Bot", "No actions recorded!\n\nUse Pathfind first.", "OK")->show();
+        if (bot->actions.empty() && bot->bestActions.empty()) {
+            FLAlertLayer::create("Error", "No actions recorded!\nUse Pathfind first.", "OK")->show();
             return;
         }
-        bot->startReplay(); 
-        FLAlertLayer::create("Bot", fmt::format("Replaying {} clicks!\n\nResume the level.", bot->actions.size()), "OK")->show();
+        bot->startReplay();
+        FLAlertLayer::create(
+            "Replay Started",
+            fmt::format("Playing {} actions\nResume the level!", bot->actions.size()),
+            "OK"
+        )->show();
         updateStatus();
     }
     
-    void onStop(CCObject*) { 
-        Bot::get()->stop(); 
-        FLAlertLayer::create("Bot", "Bot stopped.", "OK")->show();
+    void onStop(CCObject*) {
+        Bot::get()->stop();
         updateStatus();
     }
     
-    void onSave(CCObject*) { 
-        Bot::get()->save(); 
-        FLAlertLayer::create("Bot", "Saved!", "OK")->show(); 
+    void onSave(CCObject*) {
+        Bot::get()->save();
+        FLAlertLayer::create("Saved", "Bot data saved!", "OK")->show();
     }
     
-    void onLoad(CCObject*) { 
-        Bot::get()->load(); 
+    void onLoad(CCObject*) {
+        Bot::get()->load();
         updateStatus();
-        FLAlertLayer::create("Bot", fmt::format("Loaded {} actions!", Bot::get()->actions.size()), "OK")->show(); 
+        FLAlertLayer::create(
+            "Loaded",
+            fmt::format("Loaded {} actions\nBest: {:.0f}", Bot::get()->actions.size(), Bot::get()->bestX),
+            "OK"
+        )->show();
+    }
+    
+    void onClear(CCObject*) {
+        auto bot = Bot::get();
+        bot->actions.clear();
+        bot->bestActions.clear();
+        bot->deathSpots.clear();
+        bot->bestX = 0.f;
+        bot->attempts = 0;
+        bot->fails = 0;
+        bot->reset();
+        updateStatus();
+        FLAlertLayer::create("Cleared", "All bot data cleared!", "OK")->show();
     }
 
 public:
     static BotPopup* create() {
         auto ret = new BotPopup();
-        if (ret && ret->initAnchored(220, 200)) { ret->autorelease(); return ret; }
+        if (ret && ret->initAnchored(240, 210)) { ret->autorelease(); return ret; }
         delete ret;
         return nullptr;
     }
@@ -362,24 +846,22 @@ class $modify(BotPauseLayer, PauseLayer) {
         PauseLayer::customSetup();
         
         auto winSize = CCDirector::get()->getWinSize();
-        
         auto menu = CCMenu::create();
         menu->setPosition({0, 0});
         
-        auto btn = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Bot", "bigFont.fnt", "GJ_button_01.png", 0.7f),
-            this, menu_selector(BotPauseLayer::onBot));
-        btn->setPosition({winSize.width - 60, winSize.height - 30});
+        auto spr = ButtonSprite::create("Bot", "bigFont.fnt", "GJ_button_01.png", 0.65f);
+        auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(BotPauseLayer::onBot));
+        btn->setPosition({winSize.width - 60, winSize.height - 25});
         menu->addChild(btn);
         
         addChild(menu, 100);
     }
 
-    void onBot(CCObject*) { 
-        BotPopup::create()->show(); 
+    void onBot(CCObject*) {
+        BotPopup::create()->show();
     }
 };
 
-$on_mod(Loaded) { 
-    log::info("GD Bot loaded successfully!"); 
+$on_mod(Loaded) {
+    log::info("Smart GD Bot loaded!");
 }
