@@ -1,0 +1,17 @@
+{
+	"geode": "4.10.0",
+	"gd": {
+		"win": "2.2074",
+		"android": "2.2074",
+		"mac": "2.2074",
+		"ios": "2.2074"
+	},
+	"id": "quelnan.gd-bot",
+	"name": "GD Bot",
+	"version": "v1.0.0",
+	"developer": "quelnan",
+	"description": "A bot for level completions",
+	"dependencies": {
+		"geode.node-ids": ">=v1.20.0"
+	}
+}
