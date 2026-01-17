@@ -1,0 +1,23 @@
+name: Build Geode Mod
+
+on:
+  push:
+    branches: ["*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Build the mod
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: latest
+          
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GDBot
+          path: build/*.geode
