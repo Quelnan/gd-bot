@@ -85,6 +85,14 @@ static RunMode g_mode = RunMode::Idle;
 static bool g_isHolding = false;
 static bool g_prevDead = false;
 
+// Apply jump hold state to the real engine (only sends input when it changes)
+static void applyHold(GJBaseGameLayer* layer, bool hold) {
+    if (!layer) return;
+    if (hold == g_isHolding) return;
+    layer->handleButton(hold, 1, true);
+    g_isHolding = hold;
+}
+
 static int g_frame = 0;
 static int g_bestDeathFrame = 0;
 static float g_bestX = 0.f;
@@ -602,3 +610,4 @@ $on_mod(Loaded) {
     g_set.load();
     log::info("GD AutoBot Backtracker loaded. F8 toggles enabled. Use pause gear for settings.");
 }
+
