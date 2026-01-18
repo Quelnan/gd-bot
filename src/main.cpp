@@ -5,7 +5,17 @@
 #include <Geode/modify/PauseLayer.hpp>
 
 // Geode 4 settings popup
-#include <Geode/loader/ModSettingsPopup.hpp>
+// Settings popup header location differs between Geode SDK builds.
+// Use __has_include to avoid build errors.
+#if __has_include(<Geode/ui/ModSettingsPopup.hpp>)
+    #include <Geode/ui/ModSettingsPopup.hpp>
+    #define GDBOT_HAS_MOD_SETTINGS_POPUP 1
+#elif __has_include(<Geode/loader/ModSettingsPopup.hpp>)
+    #include <Geode/loader/ModSettingsPopup.hpp>
+    #define GDBOT_HAS_MOD_SETTINGS_POPUP 1
+#else
+    #define GDBOT_HAS_MOD_SETTINGS_POPUP 0
+#endif
 
 #include <vector>
 #include <set>
@@ -803,7 +813,16 @@ class $modify(BotPauseLayer, PauseLayer) {
     }
 
     void onOpenSettings(CCObject*) {
-        ModSettingsPopup::create(Mod::get())->show();
+        #if GDBOT_HAS_MOD_SETTINGS_POPUP
+            ModSettingsPopup::create(Mod::get())->show();
+        #else
+            FLAlertLayer::create(
+                "GD AutoBot",
+                "ModSettingsPopup header not found in this Geode SDK build.\n"
+                "Open the mod settings from the Geode Mods list instead.",
+                "OK"
+            )->show();
+        #endif
     }
 };
 
@@ -825,3 +844,4 @@ $on_mod(Loaded) {
     g_settings.load();
     log::info("GD AutoBot loaded (F8 toggle).");
 }
+
