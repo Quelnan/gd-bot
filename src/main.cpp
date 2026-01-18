@@ -3,6 +3,7 @@
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/modify/PlayerObject.hpp>
 #include <vector>
 #include <set>
 #include <map>
@@ -22,20 +23,23 @@ static bool g_levelAnalyzed = false;
 static int g_frameCounter = 0;
 static int g_totalClicks = 0;
 static int g_attempts = 0;
-static float g_bestProgress = 0.0f;
+static float g_playerX = 0;
+static float g_playerY = 0;
+static float g_playerYVel = 0;
+static bool g_playerOnGround = false;
+static bool g_isCube = true;
+static bool g_isUpsideDown = false;
+static float g_xSpeed = 311.58f / 240.0f;
 
 // ============================================================================
-// SIMPLE HAZARD STORAGE
+// HAZARD STORAGE
 // ============================================================================
 
-struct SimpleHazard {
-    float x;
-    float y;
-    float width;
-    float height;
+struct Hazard {
+    float x, y, w, h;
 };
 
-static std::vector<SimpleHazard> g_hazards;
+static std::vector<Hazard> g_hazards;
 
 // ============================================================================
 // HAZARD IDS
@@ -51,7 +55,7 @@ static const std::set<int> HAZARD_IDS = {
 };
 
 // ============================================================================
-// ANALYZE LEVEL - Just get hazards
+// ANALYZE LEVEL
 // ============================================================================
 
 void analyzeLevel(PlayLayer* pl) {
@@ -59,7 +63,7 @@ void analyzeLevel(PlayLayer* pl) {
     g_levelAnalyzed = false;
     
     if (!pl || !pl->m_objects) {
-        log::error("Bot: No level objects!");
+        log::error("Bot: No objects!");
         return;
     }
     
@@ -68,77 +72,67 @@ void analyzeLevel(PlayLayer* pl) {
         if (!obj) continue;
         
         if (HAZARD_IDS.count(obj->m_objectID)) {
-            SimpleHazard h;
+            Hazard h;
             h.x = obj->getPositionX();
             h.y = obj->getPositionY();
             auto size = obj->getContentSize();
             float scale = obj->getScale();
-            h.width = size.width * scale * 0.8f;
-            h.height = size.height * scale * 0.8f;
+            h.w = size.width * scale * 0.8f;
+            h.h = size.height * scale * 0.8f;
             g_hazards.push_back(h);
         }
     }
     
-    // Sort by X
-    std::sort(g_hazards.begin(), g_hazards.end(), [](const SimpleHazard& a, const SimpleHazard& b) {
+    std::sort(g_hazards.begin(), g_hazards.end(), [](const Hazard& a, const Hazard& b) {
         return a.x < b.x;
     });
     
-    log::info("Bot: Found {} hazards", g_hazards.size());
+    log::info("Bot: Analyzed {} hazards", g_hazards.size());
     g_levelAnalyzed = true;
 }
 
 // ============================================================================
-// CHECK COLLISION
+// COLLISION CHECK
 // ============================================================================
 
-bool checkHazardCollision(float px, float py, float playerSize) {
-    float half = playerSize / 2.0f;
+bool willHitHazard(float px, float py, float size = 30.0f) {
+    float half = size / 2.0f;
     
     for (const auto& h : g_hazards) {
-        // Skip if too far
         if (h.x < px - 100 || h.x > px + 100) continue;
         
-        // AABB collision
-        if (px + half > h.x - h.width/2 &&
-            px - half < h.x + h.width/2 &&
-            py + half > h.y - h.height/2 &&
-            py - half < h.y + h.height/2) {
+        if (px + half > h.x - h.w/2 &&
+            px - half < h.x + h.w/2 &&
+            py + half > h.y - h.h/2 &&
+            py - half < h.y + h.h/2) {
             return true;
         }
     }
     
-    // Check bounds
     if (py < 80 || py > 2050) return true;
-    
     return false;
 }
 
 // ============================================================================
-// SIMPLE PHYSICS SIMULATION
+// SIMPLE SIMULATION
 // ============================================================================
 
 struct SimState {
-    float x;
-    float y;
-    float yVel;
-    bool onGround;
-    bool canJump;
+    float x, y, yVel;
+    bool onGround, canJump;
 };
 
-void simulateFrame(SimState& s, bool holding, float xSpeed, float gravity, bool upsideDown, bool isCube) {
-    if (isCube) {
-        // Apply gravity
-        float g = upsideDown ? -gravity : gravity;
+void simFrame(SimState& s, bool hold, float xSpd, bool upsideDown, bool cube) {
+    if (cube) {
+        float g = upsideDown ? -0.958f : 0.958f;
         s.yVel -= g;
         s.yVel = std::clamp(s.yVel, -15.0f, 15.0f);
         s.y += s.yVel;
         
-        // Ground check
         float groundY = upsideDown ? 2085.0f : 105.0f;
-        bool hitGround = upsideDown ? (s.y >= groundY) : (s.y <= groundY);
+        bool hit = upsideDown ? (s.y >= groundY) : (s.y <= groundY);
         
-        if (hitGround) {
+        if (hit) {
             s.y = groundY;
             s.yVel = 0;
             s.onGround = true;
@@ -147,96 +141,62 @@ void simulateFrame(SimState& s, bool holding, float xSpeed, float gravity, bool 
             s.onGround = false;
         }
         
-        // Jump
-        if (holding && s.onGround && s.canJump) {
+        if (hold && s.onGround && s.canJump) {
             s.yVel = upsideDown ? -11.18f : 11.18f;
             s.onGround = false;
             s.canJump = false;
         }
-        
-        if (!holding) {
-            s.canJump = true;
-        }
+        if (!hold) s.canJump = true;
     } else {
-        // Ship-like: just go up/down based on holding
-        if (holding) {
-            s.yVel += upsideDown ? -0.8f : 0.8f;
-        } else {
-            s.yVel += upsideDown ? 0.8f : -0.8f;
-        }
+        // Ship-like
+        s.yVel += hold ? (upsideDown ? -0.8f : 0.8f) : (upsideDown ? 0.8f : -0.8f);
         s.yVel = std::clamp(s.yVel, -8.0f, 8.0f);
         s.y += s.yVel;
     }
-    
-    s.x += xSpeed;
+    s.x += xSpd;
 }
 
 // ============================================================================
-// BOT DECISION
+// BOT LOGIC
 // ============================================================================
 
-bool shouldBotClick(float px, float py, float yVel, bool onGround, bool upsideDown, bool isCube, float xSpeed) {
-    float gravity = 0.958f;
-    float playerSize = 30.0f;
-    
-    // Simulate NOT clicking
-    SimState simNo;
-    simNo.x = px;
-    simNo.y = py;
-    simNo.yVel = yVel;
-    simNo.onGround = onGround;
-    simNo.canJump = true;
-    
-    int surviveNo = 0;
+bool shouldClick() {
+    // Simulate no click
+    SimState sNo = {g_playerX, g_playerY, g_playerYVel, g_playerOnGround, true};
+    int survNo = 0;
     for (int i = 0; i < 40; i++) {
-        simulateFrame(simNo, false, xSpeed, gravity, upsideDown, isCube);
-        if (checkHazardCollision(simNo.x, simNo.y, playerSize)) break;
-        surviveNo++;
+        simFrame(sNo, false, g_xSpeed, g_isUpsideDown, g_isCube);
+        if (willHitHazard(sNo.x, sNo.y)) break;
+        survNo++;
     }
     
-    // Simulate clicking
-    SimState simYes;
-    simYes.x = px;
-    simYes.y = py;
-    simYes.yVel = yVel;
-    simYes.onGround = onGround;
-    simYes.canJump = true;
-    
-    int surviveYes = 0;
+    // Simulate click
+    SimState sYes = {g_playerX, g_playerY, g_playerYVel, g_playerOnGround, true};
+    int survYes = 0;
     for (int i = 0; i < 40; i++) {
-        bool hold = (i < 10); // Hold for 10 frames
-        simulateFrame(simYes, hold, xSpeed, gravity, upsideDown, isCube);
-        if (checkHazardCollision(simYes.x, simYes.y, playerSize)) break;
-        surviveYes++;
+        simFrame(sYes, i < 10, g_xSpeed, g_isUpsideDown, g_isCube);
+        if (willHitHazard(sYes.x, sYes.y)) break;
+        survYes++;
     }
     
-    // Click if it helps us survive longer
-    return surviveYes > surviveNo;
+    return survYes > survNo;
 }
 
 // ============================================================================
 // OVERLAY
 // ============================================================================
 
-class BotOverlay : public CCNode {
+class Overlay : public CCNode {
 public:
-    CCLabelBMFont* m_label1 = nullptr;
-    CCLabelBMFont* m_label2 = nullptr;
-    CCLabelBMFont* m_label3 = nullptr;
+    CCLabelBMFont* m_lbl1 = nullptr;
+    CCLabelBMFont* m_lbl2 = nullptr;
+    CCLabelBMFont* m_lbl3 = nullptr;
     CCDrawNode* m_draw = nullptr;
     
-    // Store current player info for display
-    float m_px = 0, m_py = 0, m_pyVel = 0;
-    bool m_onGround = false;
-    bool m_isCube = true;
-    
-    static BotOverlay* create() {
-        auto* ret = new BotOverlay();
-        if (ret && ret->init()) {
-            ret->autorelease();
-            return ret;
-        }
-        CC_SAFE_DELETE(ret);
+    static Overlay* create() {
+        auto* r = new Overlay();
+        if (r && r->init()) { r->autorelease(); return r; }
+        CC_SAFE_DELETE(r);
         return nullptr;
     }
     
@@ -246,107 +206,158 @@ public:
         m_draw = CCDrawNode::create();
         addChild(m_draw, 10);
         
-        m_label1 = CCLabelBMFont::create("Bot: OFF", "bigFont.fnt");
-        m_label1->setScale(0.4f);
-        m_label1->setAnchorPoint({0, 1});
-        m_label1->setPosition({5, 320});
-        addChild(m_label1, 100);
+        m_lbl1 = CCLabelBMFont::create("Bot: OFF", "bigFont.fnt");
+        m_lbl1->setScale(0.4f);
+        m_lbl1->setAnchorPoint({0,1});
+        m_lbl1->setPosition({5, 320});
+        addChild(m_lbl1, 100);
         
-        m_label2 = CCLabelBMFont::create("", "chatFont.fnt");
-        m_label2->setScale(0.5f);
-        m_label2->setAnchorPoint({0, 1});
-        m_label2->setPosition({5, 295});
-        addChild(m_label2, 100);
+        m_lbl2 = CCLabelBMFont::create("", "chatFont.fnt");
+        m_lbl2->setScale(0.5f);
+        m_lbl2->setAnchorPoint({0,1});
+        m_lbl2->setPosition({5, 295});
+        addChild(m_lbl2, 100);
         
-        m_label3 = CCLabelBMFont::create("", "chatFont.fnt");
-        m_label3->setScale(0.5f);
-        m_label3->setAnchorPoint({0, 1});
-        m_label3->setPosition({5, 275});
-        addChild(m_label3, 100);
+        m_lbl3 = CCLabelBMFont::create("", "chatFont.fnt");
+        m_lbl3->setScale(0.5f);
+        m_lbl3->setAnchorPoint({0,1});
+        m_lbl3->setPosition({5, 275});
+        addChild(m_lbl3, 100);
         
         scheduleUpdate();
         return true;
     }
     
-    void updateInfo(float px, float py, float yVel, bool onGround, bool isCube) {
-        m_px = px;
-        m_py = py;
-        m_pyVel = yVel;
-        m_onGround = onGround;
-        m_isCube = isCube;
-    }
-    
     void update(float dt) override {
-        // Update labels
+        // Status
         if (g_botEnabled) {
-            m_label1->setString("Bot: ON");
-            m_label1->setColor(ccc3(0, 255, 0));
+            m_lbl1->setString("Bot: ON");
+            m_lbl1->setColor(ccc3(0,255,0));
         } else {
-            m_label1->setString("Bot: OFF");
-            m_label1->setColor(ccc3(255, 100, 100));
+            m_lbl1->setString("Bot: OFF");
+            m_lbl1->setColor(ccc3(255,100,100));
         }
         
         char buf[128];
-        snprintf(buf, sizeof(buf), "X:%.0f Y:%.0f Vel:%.1f", m_px, m_py, m_pyVel);
-        m_label2->setString(buf);
+        snprintf(buf, 128, "X:%.0f Y:%.0f Vel:%.1f", g_playerX, g_playerY, g_playerYVel);
+        m_lbl2->setString(buf);
         
-        snprintf(buf, sizeof(buf), "Ground:%s Clicks:%d Mode:%s", 
-            m_onGround ? "Y" : "N", 
-            g_totalClicks,
-            m_isCube ? "Cube" : "Other");
-        m_label3->setString(buf);
+        snprintf(buf, 128, "Ground:%s Clicks:%d Cube:%s", 
+            g_playerOnGround?"Y":"N", g_totalClicks, g_isCube?"Y":"N");
+        m_lbl3->setString(buf);
         
-        // Draw debug
+        // Debug draw
         m_draw->clear();
-        if (!g_debugDraw) return;
+        if (!g_debugDraw || !g_levelAnalyzed) return;
         
-        // Draw player
-        m_draw->drawDot(ccp(m_px, m_py), 10, ccc4f(1, 1, 1, 0.8f));
+        // Player dot
+        m_draw->drawDot(ccp(g_playerX, g_playerY), 10, ccc4f(1,1,1,0.9f));
         
-        // Draw nearby hazards
-        for (const auto& h : g_hazards) {
-            if (h.x > m_px - 100 && h.x < m_px + 400) {
-                m_draw->drawDot(ccp(h.x, h.y), h.width/3, ccc4f(1, 0, 0, 0.5f));
+        // Hazards
+        for (auto& h : g_hazards) {
+            if (h.x > g_playerX - 100 && h.x < g_playerX + 400) {
+                m_draw->drawDot(ccp(h.x, h.y), h.w/3, ccc4f(1,0,0,0.5f));
             }
         }
         
-        // Draw predicted paths
-        float xSpeed = 311.58f / 240.0f; // Normal speed per frame
-        float gravity = 0.958f;
-        
-        // No-click path (red)
-        SimState simNo = {m_px, m_py, m_pyVel, m_onGround, true};
+        // Paths
+        SimState sNo = {g_playerX, g_playerY, g_playerYVel, g_playerOnGround, true};
         for (int i = 0; i < 50; i++) {
-            float oldX = simNo.x, oldY = simNo.y;
-            simulateFrame(simNo, false, xSpeed, gravity, false, m_isCube);
-            float alpha = 1.0f - (float)i/50.0f;
-            m_draw->drawSegment(ccp(oldX, oldY), ccp(simNo.x, simNo.y), 1.5f, ccc4f(1, 0.3f, 0.3f, alpha*0.7f));
-            if (checkHazardCollision(simNo.x, simNo.y, 30)) break;
+            float ox = sNo.x, oy = sNo.y;
+            simFrame(sNo, false, g_xSpeed, g_isUpsideDown, g_isCube);
+            m_draw->drawSegment(ccp(ox,oy), ccp(sNo.x,sNo.y), 1.5f, ccc4f(1,0.3f,0.3f,0.7f*(1-i/50.0f)));
+            if (willHitHazard(sNo.x, sNo.y)) break;
         }
         
-        // Click path (green)
-        SimState simYes = {m_px, m_py, m_pyVel, m_onGround, true};
+        SimState sYes = {g_playerX, g_playerY, g_playerYVel, g_playerOnGround, true};
         for (int i = 0; i < 50; i++) {
-            float oldX = simYes.x, oldY = simYes.y;
-            simulateFrame(simYes, i < 10, xSpeed, gravity, false, m_isCube);
-            float alpha = 1.0f - (float)i/50.0f;
-            m_draw->drawSegment(ccp(oldX, oldY), ccp(simYes.x, simYes.y), 1.5f, ccc4f(0.3f, 1, 0.3f, alpha*0.7f));
-            if (checkHazardCollision(simYes.x, simYes.y, 30)) break;
+            float ox = sYes.x, oy = sYes.y;
+            simFrame(sYes, i<10, g_xSpeed, g_isUpsideDown, g_isCube);
+            m_draw->drawSegment(ccp(ox,oy), ccp(sYes.x,sYes.y), 1.5f, ccc4f(0.3f,1,0.3f,0.7f*(1-i/50.0f)));
+            if (willHitHazard(sYes.x, sYes.y)) break;
         }
     }
 };
 
-static BotOverlay* g_overlay = nullptr;
+static Overlay* g_overlay = nullptr;
 
 // ============================================================================
-// PLAYLAYER HOOK
+// GJBASEGAMELAYER HOOK - This is where the game actually updates!
+// ============================================================================
+
+class $modify(BotGameLayer, GJBaseGameLayer) {
+    
+    void update(float dt) {
+        GJBaseGameLayer::update(dt);
+        
+        g_frameCounter++;
+        
+        // Log every 2 seconds to confirm update is running
+        if (g_frameCounter % 120 == 1) {
+            log::info("Bot: GJBaseGameLayer::update frame {}", g_frameCounter);
+        }
+        
+        // Get PlayLayer
+        auto* pl = PlayLayer::get();
+        if (!pl) return;
+        
+        // Check conditions
+        if (!g_botEnabled) return;
+        if (!m_player1) return;
+        if (pl->m_isPaused) return;
+        if (pl->m_hasCompletedLevel) return;
+        if (m_player1->m_isDead) return;
+        if (!g_levelAnalyzed) return;
+        
+        // === READ PLAYER STATE ===
+        g_playerX = m_player1->getPositionX();
+        g_playerY = m_player1->getPositionY();
+        g_playerYVel = m_player1->m_yVelocity;
+        g_playerOnGround = m_player1->m_isOnGround;
+        g_isUpsideDown = m_player1->m_isUpsideDown;
+        
+        g_isCube = !m_player1->m_isShip && !m_player1->m_isBall && 
+                   !m_player1->m_isBird && !m_player1->m_isDart &&
+                   !m_player1->m_isRobot && !m_player1->m_isSpider && 
+                   !m_player1->m_isSwing;
+        
+        // Speed
+        float spd = m_player1->m_playerSpeed;
+        if (spd <= 0.8f) g_xSpeed = 251.16f / 240.0f;
+        else if (spd <= 0.95f) g_xSpeed = 311.58f / 240.0f;
+        else if (spd <= 1.05f) g_xSpeed = 387.42f / 240.0f;
+        else if (spd <= 1.15f) g_xSpeed = 468.0f / 240.0f;
+        else g_xSpeed = 576.0f / 240.0f;
+        
+        // Log position periodically
+        if (g_frameCounter % 60 == 1) {
+            log::info("Bot: pos=({:.0f},{:.0f}) vel={:.1f} ground={} cube={}",
+                g_playerX, g_playerY, g_playerYVel, g_playerOnGround, g_isCube);
+        }
+        
+        // === BOT DECISION ===
+        bool click = shouldClick();
+        
+        // === APPLY INPUT ===
+        if (click != g_isHolding) {
+            this->handleButton(click, 1, true);
+            g_isHolding = click;
+            
+            if (click) {
+                g_totalClicks++;
+                log::info("Bot: CLICK #{} at ({:.0f},{:.0f})", g_totalClicks, g_playerX, g_playerY);
+            } else {
+                log::info("Bot: RELEASE at ({:.0f},{:.0f})", g_playerX, g_playerY);
+            }
+        }
+    }
+};
+
+// ============================================================================
+// PLAYLAYER HOOK - Just for init/reset/analyze
 // ============================================================================
 
 class $modify(BotPlayLayer, PlayLayer) {
-    struct Fields {
-        float lastX = 0;
-        float lastY = 0;
-    };
     
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
@@ -357,11 +368,10 @@ class $modify(BotPlayLayer, PlayLayer) {
         g_isHolding = false;
         g_frameCounter = 0;
         g_totalClicks = 0;
-        m_fields->lastX = 0;
-        m_fields->lastY = 0;
+        g_playerX = 0;
+        g_playerY = 0;
         
-        // Create overlay
-        g_overlay = BotOverlay::create();
+        g_overlay = Overlay::create();
         g_overlay->setZOrder(9999);
         addChild(g_overlay);
         
@@ -380,11 +390,9 @@ class $modify(BotPlayLayer, PlayLayer) {
         g_attempts++;
         g_frameCounter = 0;
         g_totalClicks = 0;
-        m_fields->lastX = 0;
-        m_fields->lastY = 0;
         
         if (g_isHolding) {
-            if (auto gj = GJBaseGameLayer::get()) {
+            if (auto* gj = GJBaseGameLayer::get()) {
                 gj->handleButton(false, 1, true);
             }
             g_isHolding = false;
@@ -397,96 +405,15 @@ class $modify(BotPlayLayer, PlayLayer) {
         log::info("Bot: Reset (attempt {})", g_attempts);
     }
     
-    void update(float dt) {
-        PlayLayer::update(dt);
-        
-        g_frameCounter++;
-        
-        // === CRITICAL DEBUG: Check if we even get here ===
-        if (g_frameCounter % 120 == 1) {
-            log::info("Bot: Frame {} | enabled={} | player={} | paused={} | dead={} | analyzed={}",
-                g_frameCounter,
-                g_botEnabled,
-                m_player1 != nullptr,
-                m_isPaused,
-                m_player1 ? m_player1->m_isDead : true,
-                g_levelAnalyzed);
-        }
-        
-        if (!g_botEnabled) return;
-        if (!m_player1) return;
-        if (m_isPaused) return;
-        if (m_hasCompletedLevel) return;
-        if (m_player1->m_isDead) return;
-        if (!g_levelAnalyzed) return;
-        
-        // === GET PLAYER STATE ===
-        float px = m_player1->getPositionX();
-        float py = m_player1->getPositionY();
-        float yVel = m_player1->m_yVelocity;
-        bool onGround = m_player1->m_isOnGround;
-        bool upsideDown = m_player1->m_isUpsideDown;
-        
-        // Determine gamemode
-        bool isCube = !m_player1->m_isShip && !m_player1->m_isBall && 
-                      !m_player1->m_isBird && !m_player1->m_isDart &&
-                      !m_player1->m_isRobot && !m_player1->m_isSpider && !m_player1->m_isSwing;
-        
-        // Get speed
-        float speedMult = 311.58f; // Normal speed
-        float playerSpeed = m_player1->m_playerSpeed;
-        if (playerSpeed <= 0.8f) speedMult = 251.16f;
-        else if (playerSpeed <= 0.95f) speedMult = 311.58f;
-        else if (playerSpeed <= 1.05f) speedMult = 387.42f;
-        else if (playerSpeed <= 1.15f) speedMult = 468.0f;
-        else speedMult = 576.0f;
-        
-        float xSpeed = speedMult / 240.0f;
-        
-        // === DEBUG: Log position changes ===
-        if (std::abs(px - m_fields->lastX) > 50 || g_frameCounter % 60 == 1) {
-            log::info("Bot: pos=({:.0f},{:.0f}) vel={:.1f} ground={} cube={}", 
-                px, py, yVel, onGround, isCube);
-            m_fields->lastX = px;
-            m_fields->lastY = py;
-        }
-        
-        // Update overlay
-        if (g_overlay) {
-            g_overlay->updateInfo(px, py, yVel, onGround, isCube);
-        }
-        
-        // === BOT DECISION ===
-        bool shouldClick = shouldBotClick(px, py, yVel, onGround, upsideDown, isCube, xSpeed);
-        
-        // === APPLY INPUT ===
-        if (shouldClick != g_isHolding) {
-            auto* gj = GJBaseGameLayer::get();
-            if (gj) {
-                gj->handleButton(shouldClick, 1, true);
-                g_isHolding = shouldClick;
-                
-                if (shouldClick) {
-                    g_totalClicks++;
-                    log::info("Bot: CLICK #{} at ({:.0f}, {:.0f})", g_totalClicks, px, py);
-                } else {
-                    log::info("Bot: RELEASE at ({:.0f}, {:.0f})", px, py);
-                }
-            } else {
-                log::error("Bot: GJBaseGameLayer is NULL!");
-            }
-        }
-    }
-    
     void levelComplete() {
         PlayLayer::levelComplete();
-        log::info("Bot: LEVEL COMPLETE! Clicks: {}", g_totalClicks);
-        Notification::create("Bot: Level Complete!", NotificationIcon::Success)->show();
+        log::info("Bot: COMPLETE! {} clicks", g_totalClicks);
+        Notification::create("Bot: Complete!", NotificationIcon::Success)->show();
     }
     
     void onQuit() {
         if (g_isHolding) {
-            if (auto gj = GJBaseGameLayer::get()) {
+            if (auto* gj = GJBaseGameLayer::get()) {
                 gj->handleButton(false, 1, true);
             }
             g_isHolding = false;
@@ -505,54 +432,47 @@ class $modify(BotPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
         
-        auto winSize = CCDirector::sharedDirector()->getWinSize();
-        
+        auto ws = CCDirector::sharedDirector()->getWinSize();
         auto* menu = CCMenu::create();
-        menu->setPosition({0, 0});
+        menu->setPosition({0,0});
         addChild(menu, 100);
         
-        // Bot toggle
-        auto* onSpr = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
-        auto* offSpr = CCSprite::createWithSpriteFrameName("GJ_checkOff_001.png");
-        auto* toggle = CCMenuItemToggler::create(offSpr, onSpr, this, menu_selector(BotPauseLayer::onToggleBot));
-        toggle->setPosition({winSize.width - 30, winSize.height - 30});
-        toggle->toggle(g_botEnabled);
-        menu->addChild(toggle);
+        auto* on1 = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
+        auto* off1 = CCSprite::createWithSpriteFrameName("GJ_checkOff_001.png");
+        auto* t1 = CCMenuItemToggler::create(off1, on1, this, menu_selector(BotPauseLayer::onBot));
+        t1->setPosition({ws.width-30, ws.height-30});
+        t1->toggle(g_botEnabled);
+        menu->addChild(t1);
         
-        auto* label = CCLabelBMFont::create("Bot", "bigFont.fnt");
-        label->setScale(0.35f);
-        label->setPosition({winSize.width - 30, winSize.height - 50});
-        addChild(label, 100);
+        auto* l1 = CCLabelBMFont::create("Bot", "bigFont.fnt");
+        l1->setScale(0.35f);
+        l1->setPosition({ws.width-30, ws.height-50});
+        addChild(l1, 100);
         
-        // Debug toggle
-        auto* onSpr2 = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
-        auto* offSpr2 = CCSprite::createWithSpriteFrameName("GJ_checkOff_001.png");
-        onSpr2->setScale(0.7f);
-        offSpr2->setScale(0.7f);
-        auto* toggle2 = CCMenuItemToggler::create(offSpr2, onSpr2, this, menu_selector(BotPauseLayer::onToggleDebug));
-        toggle2->setPosition({winSize.width - 30, winSize.height - 75});
-        toggle2->toggle(g_debugDraw);
-        menu->addChild(toggle2);
+        auto* on2 = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
+        auto* off2 = CCSprite::createWithSpriteFrameName("GJ_checkOff_001.png");
+        on2->setScale(0.7f); off2->setScale(0.7f);
+        auto* t2 = CCMenuItemToggler::create(off2, on2, this, menu_selector(BotPauseLayer::onDebug));
+        t2->setPosition({ws.width-30, ws.height-75});
+        t2->toggle(g_debugDraw);
+        menu->addChild(t2);
         
-        auto* label2 = CCLabelBMFont::create("Debug", "bigFont.fnt");
-        label2->setScale(0.25f);
-        label2->setPosition({winSize.width - 30, winSize.height - 92});
-        addChild(label2, 100);
+        auto* l2 = CCLabelBMFont::create("Debug", "bigFont.fnt");
+        l2->setScale(0.25f);
+        l2->setPosition({ws.width-30, ws.height-92});
+        addChild(l2, 100);
     }
     
-    void onToggleBot(CCObject*) {
+    void onBot(CCObject*) {
         g_botEnabled = !g_botEnabled;
         log::info("Bot: {} (menu)", g_botEnabled ? "ON" : "OFF");
-        
         if (!g_botEnabled && g_isHolding) {
-            if (auto gj = GJBaseGameLayer::get()) {
-                gj->handleButton(false, 1, true);
-            }
+            if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
             g_isHolding = false;
         }
     }
     
-    void onToggleDebug(CCObject*) {
+    void onDebug(CCObject*) {
         g_debugDraw = !g_debugDraw;
         log::info("Debug: {}", g_debugDraw ? "ON" : "OFF");
     }
@@ -568,21 +488,14 @@ class $modify(CCKeyboardDispatcher) {
             if (key == KEY_F8) {
                 g_botEnabled = !g_botEnabled;
                 log::info("Bot: {} (F8)", g_botEnabled ? "ON" : "OFF");
-                
                 if (!g_botEnabled && g_isHolding) {
-                    if (auto gj = GJBaseGameLayer::get()) {
-                        gj->handleButton(false, 1, true);
-                    }
+                    if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
                     g_isHolding = false;
                 }
-                
-                Notification::create(
-                    g_botEnabled ? "Bot: ON" : "Bot: OFF",
-                    g_botEnabled ? NotificationIcon::Success : NotificationIcon::Info
-                )->show();
+                Notification::create(g_botEnabled ? "Bot: ON" : "Bot: OFF",
+                    g_botEnabled ? NotificationIcon::Success : NotificationIcon::Info)->show();
                 return true;
             }
-            
             if (key == KEY_F9) {
                 g_debugDraw = !g_debugDraw;
                 log::info("Debug: {}", g_debugDraw ? "ON" : "OFF");
@@ -599,9 +512,7 @@ class $modify(CCKeyboardDispatcher) {
 // ============================================================================
 
 $on_mod(Loaded) {
-    log::info("===========================================");
-    log::info("  Bot Mod Loaded!");
-    log::info("  F8 = Toggle Bot");
-    log::info("  F9 = Toggle Debug");
-    log::info("===========================================");
+    log::info("=====================================");
+    log::info("  Bot Loaded! F8=Toggle F9=Debug");
+    log::info("=====================================");
 }
