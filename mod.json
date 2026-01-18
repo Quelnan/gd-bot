@@ -1,17 +1,75 @@
 {
-	"geode": "4.10.0",
-	"gd": {
-		"win": "2.2074",
-		"android": "2.2074",
-		"mac": "2.2074",
-		"ios": "2.2074"
-	},
-	"id": "quelnan.gd-bot",
-	"name": "GD Bot",
-	"version": "v1.0.0",
-	"developer": "quelnan",
-	"description": "A bot for level completions",
-	"dependencies": {
-		"geode.node-ids": ">=v1.20.0"
-	}
+    "geode": "3.4.0",
+    "gd": {
+        "win": "2.206",
+        "mac": "2.206",
+        "android": "2.206"
+    },
+    "id": "developer.gdbot",
+    "name": "GD AutoBot",
+    "version": "v1.0.0",
+    "developer": "Developer",
+    "description": "Automatic level completion bot with physics simulation",
+    "settings": {
+        "sim-frames": {
+            "name": "Simulation Frames",
+            "description": "How many frames ahead to simulate (higher = smarter but slower)",
+            "type": "int",
+            "default": 60,
+            "min": 20,
+            "max": 200
+        },
+        "hold-duration": {
+            "name": "Click Hold Duration",
+            "description": "How many frames to hold each click",
+            "type": "int",
+            "default": 12,
+            "min": 1,
+            "max": 30
+        },
+        "hitbox-scale": {
+            "name": "Hitbox Scale",
+            "description": "Player hitbox multiplier (lower = more precise, higher = safer)",
+            "type": "float",
+            "default": 0.9,
+            "min": 0.5,
+            "max": 1.2
+        },
+        "hazard-hitbox-scale": {
+            "name": "Hazard Hitbox Scale",
+            "description": "Hazard hitbox multiplier (higher = more cautious)",
+            "type": "float",
+            "default": 1.0,
+            "min": 0.7,
+            "max": 1.5
+        },
+        "safe-margin": {
+            "name": "Safe Margin",
+            "description": "Extra pixels to avoid hazards by",
+            "type": "float",
+            "default": 2.0,
+            "min": 0.0,
+            "max": 10.0
+        },
+        "reaction-distance": {
+            "name": "Reaction Distance",
+            "description": "How far ahead to check for hazards",
+            "type": "float",
+            "default": 150.0,
+            "min": 50.0,
+            "max": 400.0
+        },
+        "debug-overlay": {
+            "name": "Show Debug Overlay",
+            "description": "Show position and status info on screen",
+            "type": "bool",
+            "default": true
+        },
+        "debug-draw": {
+            "name": "Show Trajectory Lines",
+            "description": "Draw predicted paths and hazard hitboxes",
+            "type": "bool",
+            "default": false
+        }
+    }
 }
