@@ -897,29 +897,6 @@ public:
 };
 
 // ============================================================================
-// INPUT HANDLER - Handles simulating clicks
-// ============================================================================
-
-class InputHandler {
-public:
-    static void pressJump(PlayerObject* player) {
-        if (!player) return;
-        player->pushButton(PlayerButton::Jump);
-    }
-    
-    static void releaseJump(PlayerObject* player) {
-        if (!player) return;
-        player->releaseButton(PlayerButton::Jump);
-    }
-    
-    static void setHolding(PlayerObject* player, bool holding) {
-        if (!player) return;
-        player->m_isHolding = holding;
-        player->m_hasJustHeld = holding;
-    }
-};
-
-// ============================================================================
 // DEBUG VISUALIZER
 // ============================================================================
 
@@ -1155,22 +1132,23 @@ public:
         }
     }
     
-    void update(PlayLayer* pl) {
-        if (!m_enabled || !pl || !pl->m_player1) return;
+    void update(GJBaseGameLayer* gl) {
+        if (!m_enabled || !gl || !gl->m_player1) return;
+        
+        auto* pl = static_cast<PlayLayer*>(gl);
         if (pl->m_isPaused || pl->m_hasCompletedLevel) return;
         
-        updateState(pl->m_player1);
+        updateState(gl->m_player1);
         
         bool shouldClick = Pathfinder::get()->getNextInput(m_currentState, LevelAnalyzer::get());
         
+        // Use GJBaseGameLayer for button input
         if (shouldClick && !m_isClicking) {
-            InputHandler::pressJump(pl->m_player1);
-            InputHandler::setHolding(pl->m_player1, true);
+            gl->m_player1->pushButton(PlayerButton::Jump);
             m_isClicking = true;
         }
         else if (!shouldClick && m_isClicking) {
-            InputHandler::releaseJump(pl->m_player1);
-            InputHandler::setHolding(pl->m_player1, false);
+            gl->m_player1->releaseButton(PlayerButton::Jump);
             m_isClicking = false;
         }
     }
@@ -1180,10 +1158,9 @@ public:
         Pathfinder::get()->reset();
     }
     
-    void forceRelease(PlayLayer* pl) {
-        if (pl && pl->m_player1) {
-            InputHandler::releaseJump(pl->m_player1);
-            InputHandler::setHolding(pl->m_player1, false);
+    void forceRelease(GJBaseGameLayer* gl) {
+        if (gl && gl->m_player1) {
+            gl->m_player1->releaseButton(PlayerButton::Jump);
         }
         m_isClicking = false;
     }
