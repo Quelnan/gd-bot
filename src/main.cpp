@@ -71,7 +71,8 @@ static BotSettings g_settings;
 // ============================================================================
 
 struct HitboxInfo {
-    float w, h;
+    float w;
+    float h;
     bool triangle;
 };
 
@@ -121,13 +122,24 @@ static const std::map<int, BotGameMode> PORTAL_IDS = {
 
 struct LevelObj {
     int id = 0;
-    float x = 0, y = 0, w = 0, h = 0, rot = 0, scaleX = 1, scaleY = 1;
+    float x = 0;
+    float y = 0;
+    float w = 0;
+    float h = 0;
+    float rot = 0;
+    float scaleX = 1;
+    float scaleY = 1;
     bool triangle = false;
-    bool isHazard = false, isOrb = false, isPad = false, isPortal = false;
+    bool isHazard = false;
+    bool isOrb = false;
+    bool isPad = false;
+    bool isPortal = false;
     int subType = 0;
     BotGameMode portalMode = BotGameMode::Cube;
-    bool gravityPortal = false, gravityUp = false;
-    bool sizePortal = false, sizeMini = false;
+    bool gravityPortal = false;
+    bool gravityUp = false;
+    bool sizePortal = false;
+    bool sizeMini = false;
     bool speedPortal = false;
     float speedVal = 1.0f;
 };
@@ -139,7 +151,7 @@ static std::vector<LevelObj*> g_pads;
 static std::vector<LevelObj*> g_portals;
 
 // ============================================================================
-// PHYSICS
+// PHYSICS CONSTANTS
 // ============================================================================
 
 namespace Phys {
@@ -192,12 +204,12 @@ void analyzeLevel(PlayLayer* pl) {
         lo.scaleY = obj->getScaleY();
         
         if (HITBOX_DATA.count(id)) {
-            auto& hb = HITBOX_DATA.at(id);
+            const HitboxInfo& hb = HITBOX_DATA.at(id);
             lo.w = hb.w * std::abs(lo.scaleX);
             lo.h = hb.h * std::abs(lo.scaleY);
             lo.triangle = hb.triangle;
         } else {
-            auto sz = obj->getContentSize();
+            CCSize sz = obj->getContentSize();
             float sc = obj->getScale();
             lo.w = sz.width * sc * 0.8f;
             lo.h = sz.height * sc * 0.8f;
@@ -237,12 +249,16 @@ void analyzeLevel(PlayLayer* pl) {
         else if (id == 203) { lo.isPortal = true; lo.speedPortal = true; lo.speedVal = 1.1f; important = true; }
         else if (id == 1334) { lo.isPortal = true; lo.speedPortal = true; lo.speedVal = 1.3f; important = true; }
         
-        if (important) g_objects.push_back(lo);
+        if (important) {
+            g_objects.push_back(lo);
+        }
     }
     
-    std::sort(g_objects.begin(), g_objects.end(), [](auto& a, auto& b) { return a.x < b.x; });
+    std::sort(g_objects.begin(), g_objects.end(), [](const LevelObj& a, const LevelObj& b) {
+        return a.x < b.x;
+    });
     
-    for (auto& o : g_objects) {
+    for (LevelObj& o : g_objects) {
         if (o.isHazard) g_hazards.push_back(&o);
         if (o.isOrb) g_orbs.push_back(&o);
         if (o.isPad) g_pads.push_back(&o);
@@ -255,7 +271,7 @@ void analyzeLevel(PlayLayer* pl) {
 }
 
 // ============================================================================
-// COLLISION
+// COLLISION DETECTION
 // ============================================================================
 
 float getPlayerSize() {
@@ -266,7 +282,7 @@ float getPlayerSize() {
 }
 
 bool pointInTriangle(float px, float py, float x1, float y1, float x2, float y2, float x3, float y3) {
-    auto sign = [](float p1x, float p1y, float p2x, float p2y, float p3x, float p3y) {
+    auto sign = [](float p1x, float p1y, float p2x, float p2y, float p3x, float p3y) -> float {
         return (p1x - p3x) * (p2y - p3y) - (p2x - p3x) * (p1y - p3y);
     };
     float d1 = sign(px, py, x1, y1, x2, y2);
@@ -278,49 +294,61 @@ bool pointInTriangle(float px, float py, float x1, float y1, float x2, float y2,
 }
 
 bool checkTriangleCollision(float px, float py, float psz, const LevelObj& s) {
-    float hw = (s.w * g_settings.hazardHitboxScale) / 2;
-    float hh = (s.h * g_settings.hazardHitboxScale) / 2;
+    float hw = (s.w * g_settings.hazardHitboxScale) / 2.0f;
+    float hh = (s.h * g_settings.hazardHitboxScale) / 2.0f;
     float rad = s.rot * 3.14159f / 180.0f;
-    float cosR = std::cos(rad), sinR = std::sin(rad);
+    float cosR = std::cos(rad);
+    float sinR = std::sin(rad);
     
     float pts[3][2] = {{-hw, -hh}, {hw, -hh}, {0, hh}};
-    for (auto& p : pts) {
-        float nx = p[0]*cosR - p[1]*sinR + s.x;
-        float ny = p[0]*sinR + p[1]*cosR + s.y;
-        p[0] = nx; p[1] = ny;
+    for (int i = 0; i < 3; i++) {
+        float nx = pts[i][0] * cosR - pts[i][1] * sinR + s.x;
+        float ny = pts[i][0] * sinR + pts[i][1] * cosR + s.y;
+        pts[i][0] = nx;
+        pts[i][1] = ny;
     }
     
-    float half = psz/2 + g_settings.safeMargin;
-    float corners[4][2] = {{px-half,py-half},{px+half,py-half},{px-half,py+half},{px+half,py+half}};
-    for (auto& c : corners) {
-        if (pointInTriangle(c[0], c[1], pts[0][0], pts[0][1], pts[1][0], pts[1][1], pts[2][0], pts[2][1]))
+    float half = psz / 2.0f + g_settings.safeMargin;
+    float corners[4][2] = {
+        {px - half, py - half},
+        {px + half, py - half},
+        {px - half, py + half},
+        {px + half, py + half}
+    };
+    
+    for (int i = 0; i < 4; i++) {
+        if (pointInTriangle(corners[i][0], corners[i][1], pts[0][0], pts[0][1], pts[1][0], pts[1][1], pts[2][0], pts[2][1])) {
             return true;
+        }
     }
     return false;
 }
 
 bool checkAABB(float px, float py, float psz, const LevelObj& o) {
-    float ph = psz/2 + g_settings.safeMargin;
-    float ow = (o.w * g_settings.hazardHitboxScale) / 2;
-    float oh = (o.h * g_settings.hazardHitboxScale) / 2;
-    return !(px+ph < o.x-ow || px-ph > o.x+ow || py+ph < o.y-oh || py-ph > o.y+oh);
+    float ph = psz / 2.0f + g_settings.safeMargin;
+    float ow = (o.w * g_settings.hazardHitboxScale) / 2.0f;
+    float oh = (o.h * g_settings.hazardHitboxScale) / 2.0f;
+    return !(px + ph < o.x - ow || px - ph > o.x + ow || py + ph < o.y - oh || py - ph > o.y + oh);
 }
 
 bool willHitHazard(float px, float py) {
     float psz = getPlayerSize();
-    for (auto* h : g_hazards) {
-        if (h->x < px - 50 || h->x > px + g_settings.reactionDistance) continue;
-        if (h->triangle ? checkTriangleCollision(px, py, psz, *h) : checkAABB(px, py, psz, *h))
-            return true;
+    for (const LevelObj* h : g_hazards) {
+        if (h->x < px - 50.0f || h->x > px + g_settings.reactionDistance) continue;
+        if (h->triangle) {
+            if (checkTriangleCollision(px, py, psz, *h)) return true;
+        } else {
+            if (checkAABB(px, py, psz, *h)) return true;
+        }
     }
-    if (py < Phys::GROUND - 30 || py > Phys::CEILING + 30) return true;
+    if (py < Phys::GROUND - 30.0f || py > Phys::CEILING + 30.0f) return true;
     return false;
 }
 
 LevelObj* findOrb(float px, float py) {
     float psz = getPlayerSize() * 1.5f;
-    for (auto* o : g_orbs) {
-        if (std::abs(o->x - px) > 50) continue;
+    for (LevelObj* o : g_orbs) {
+        if (std::abs(o->x - px) > 50.0f) continue;
         if (checkAABB(px, py, psz, *o)) return o;
     }
     return nullptr;
@@ -328,35 +356,46 @@ LevelObj* findOrb(float px, float py) {
 
 LevelObj* findPad(float px, float py) {
     float psz = getPlayerSize();
-    for (auto* p : g_pads) {
-        if (std::abs(p->x - px) > 50) continue;
+    for (LevelObj* p : g_pads) {
+        if (std::abs(p->x - px) > 50.0f) continue;
         if (checkAABB(px, py, psz, *p)) return p;
     }
     return nullptr;
 }
 
 LevelObj* findPortal(float px, float py) {
-    float psz = getPlayerSize() * 2;
-    for (auto* p : g_portals) {
-        if (std::abs(p->x - px) > 50) continue;
+    float psz = getPlayerSize() * 2.0f;
+    for (LevelObj* p : g_portals) {
+        if (std::abs(p->x - px) > 50.0f) continue;
         if (checkAABB(px, py, psz, *p)) return p;
     }
     return nullptr;
 }
 
 // ============================================================================
-// SIMULATION
+// SIMULATION STATE
 // ============================================================================
 
 struct SimState {
-    float x, y, yVel, xSpeed;
-    bool onGround, canJump, upsideDown, mini;
+    float x;
+    float y;
+    float yVel;
+    float xSpeed;
+    bool onGround;
+    bool canJump;
+    bool upsideDown;
+    bool mini;
     BotGameMode mode;
-    float orbCD; int lastOrb;
+    float orbCD;
+    int lastOrb;
 };
 
+// ============================================================================
+// SIMULATION
+// ============================================================================
+
 void simFrame(SimState& s, bool hold) {
-    if (s.orbCD > 0) s.orbCD -= 1.0f/240.0f;
+    if (s.orbCD > 0) s.orbCD -= 1.0f / 240.0f;
     
     float g = Phys::GRAVITY * (s.mini ? 0.8f : 1.0f) * (s.upsideDown ? -1.0f : 1.0f);
     float groundY = s.upsideDown ? Phys::CEILING : Phys::GROUND;
@@ -367,11 +406,18 @@ void simFrame(SimState& s, bool hold) {
             s.yVel = std::clamp(s.yVel, -Phys::MAX_VEL, Phys::MAX_VEL);
             s.y += s.yVel;
             bool hit = s.upsideDown ? (s.y >= groundY) : (s.y <= groundY);
-            if (hit) { s.y = groundY; s.yVel = 0; s.onGround = true; s.canJump = true; }
-            else s.onGround = false;
+            if (hit) {
+                s.y = groundY;
+                s.yVel = 0;
+                s.onGround = true;
+                s.canJump = true;
+            } else {
+                s.onGround = false;
+            }
             if (hold && s.onGround && s.canJump) {
-                s.yVel = (s.upsideDown ? -1 : 1) * (s.mini ? Phys::JUMP_MINI : Phys::JUMP);
-                s.onGround = false; s.canJump = false;
+                s.yVel = (s.upsideDown ? -1.0f : 1.0f) * (s.mini ? Phys::JUMP_MINI : Phys::JUMP);
+                s.onGround = false;
+                s.canJump = false;
             }
             if (!hold) s.canJump = true;
             break;
@@ -379,11 +425,21 @@ void simFrame(SimState& s, bool hold) {
         case BotGameMode::Ship: {
             float acc = s.mini ? 0.6f : Phys::SHIP_ACCEL;
             float maxV = s.mini ? 6.0f : Phys::SHIP_MAX;
-            s.yVel += hold ? (s.upsideDown ? -acc : acc) : (s.upsideDown ? acc : -acc);
+            if (hold) {
+                s.yVel += s.upsideDown ? -acc : acc;
+            } else {
+                s.yVel += s.upsideDown ? acc : -acc;
+            }
             s.yVel = std::clamp(s.yVel, -maxV, maxV);
             s.y += s.yVel;
-            if (s.y < Phys::GROUND) { s.y = Phys::GROUND; s.yVel = std::max(s.yVel, 0.0f); }
-            if (s.y > Phys::CEILING) { s.y = Phys::CEILING; s.yVel = std::min(s.yVel, 0.0f); }
+            if (s.y < Phys::GROUND) {
+                s.y = Phys::GROUND;
+                s.yVel = std::max(s.yVel, 0.0f);
+            }
+            if (s.y > Phys::CEILING) {
+                s.y = Phys::CEILING;
+                s.yVel = std::min(s.yVel, 0.0f);
+            }
             break;
         }
         case BotGameMode::Ball: {
@@ -391,8 +447,13 @@ void simFrame(SimState& s, bool hold) {
             s.yVel = std::clamp(s.yVel, -12.0f, 12.0f);
             s.y += s.yVel;
             bool hit = s.upsideDown ? (s.y >= groundY) : (s.y <= groundY);
-            if (hit) { s.y = groundY; s.yVel = 0; s.onGround = true; }
-            else s.onGround = false;
+            if (hit) {
+                s.y = groundY;
+                s.yVel = 0;
+                s.onGround = true;
+            } else {
+                s.onGround = false;
+            }
             if (hold && s.onGround && s.canJump) {
                 s.upsideDown = !s.upsideDown;
                 s.yVel = s.upsideDown ? -Phys::BALL_VEL : Phys::BALL_VEL;
@@ -406,9 +467,12 @@ void simFrame(SimState& s, bool hold) {
             s.yVel = std::clamp(s.yVel, -8.0f, 8.0f);
             s.y += s.yVel;
             bool hit = s.upsideDown ? (s.y >= groundY) : (s.y <= groundY);
-            if (hit) { s.y = groundY; s.yVel = 0; }
+            if (hit) {
+                s.y = groundY;
+                s.yVel = 0;
+            }
             if (hold && s.canJump) {
-                s.yVel = (s.upsideDown ? -1 : 1) * (s.mini ? 5.5f : Phys::UFO_BOOST);
+                s.yVel = (s.upsideDown ? -1.0f : 1.0f) * (s.mini ? 5.5f : Phys::UFO_BOOST);
                 s.canJump = false;
             }
             if (!hold) s.canJump = true;
@@ -416,7 +480,11 @@ void simFrame(SimState& s, bool hold) {
         }
         case BotGameMode::Wave: {
             float ws = s.xSpeed * (s.mini ? 0.7f : 1.0f);
-            s.y += hold ? (s.upsideDown ? -ws : ws) : (s.upsideDown ? ws : -ws);
+            if (hold) {
+                s.y += s.upsideDown ? -ws : ws;
+            } else {
+                s.y += s.upsideDown ? ws : -ws;
+            }
             break;
         }
         case BotGameMode::Robot: {
@@ -424,11 +492,18 @@ void simFrame(SimState& s, bool hold) {
             s.yVel = std::clamp(s.yVel, -Phys::MAX_VEL, Phys::MAX_VEL);
             s.y += s.yVel;
             bool hit = s.upsideDown ? (s.y >= groundY) : (s.y <= groundY);
-            if (hit) { s.y = groundY; s.yVel = 0; s.onGround = true; s.canJump = true; }
-            else s.onGround = false;
+            if (hit) {
+                s.y = groundY;
+                s.yVel = 0;
+                s.onGround = true;
+                s.canJump = true;
+            } else {
+                s.onGround = false;
+            }
             if (hold && s.onGround && s.canJump) {
-                s.yVel = (s.upsideDown ? -1 : 1) * 10.0f;
-                s.onGround = false; s.canJump = false;
+                s.yVel = (s.upsideDown ? -1.0f : 1.0f) * 10.0f;
+                s.onGround = false;
+                s.canJump = false;
             }
             if (!hold) s.canJump = true;
             break;
@@ -438,12 +513,19 @@ void simFrame(SimState& s, bool hold) {
             s.yVel = std::clamp(s.yVel, -Phys::MAX_VEL, Phys::MAX_VEL);
             s.y += s.yVel;
             bool hit = s.upsideDown ? (s.y >= groundY) : (s.y <= groundY);
-            if (hit) { s.y = groundY; s.yVel = 0; s.onGround = true; s.canJump = true; }
-            else s.onGround = false;
+            if (hit) {
+                s.y = groundY;
+                s.yVel = 0;
+                s.onGround = true;
+                s.canJump = true;
+            } else {
+                s.onGround = false;
+            }
             if (hold && s.onGround && s.canJump) {
                 s.upsideDown = !s.upsideDown;
                 s.y = s.upsideDown ? Phys::CEILING : Phys::GROUND;
-                s.yVel = 0; s.canJump = false;
+                s.yVel = 0;
+                s.canJump = false;
             }
             if (!hold) s.canJump = true;
             break;
@@ -456,50 +538,67 @@ void simFrame(SimState& s, bool hold) {
             break;
         }
     }
+    
     s.x += s.xSpeed;
-    s.y = std::clamp(s.y, Phys::GROUND - 30, Phys::CEILING + 30);
+    s.y = std::clamp(s.y, Phys::GROUND - 30.0f, Phys::CEILING + 30.0f);
 }
 
 void simInteract(SimState& s, bool hold) {
-    auto* portal = findPortal(s.x, s.y);
+    LevelObj* portal = findPortal(s.x, s.y);
     if (portal) {
-        if (portal->gravityPortal) s.upsideDown = portal->gravityUp;
-        else if (portal->sizePortal) s.mini = portal->sizeMini;
-        else if (portal->speedPortal) {
-            if (portal->speedVal <= 0.8f) s.xSpeed = Phys::SPEED_SLOW/240;
-            else if (portal->speedVal <= 0.95f) s.xSpeed = Phys::SPEED_NORMAL/240;
-            else if (portal->speedVal <= 1.05f) s.xSpeed = Phys::SPEED_FAST/240;
-            else if (portal->speedVal <= 1.15f) s.xSpeed = Phys::SPEED_FASTER/240;
-            else s.xSpeed = Phys::SPEED_FASTEST/240;
+        if (portal->gravityPortal) {
+            s.upsideDown = portal->gravityUp;
+        } else if (portal->sizePortal) {
+            s.mini = portal->sizeMini;
+        } else if (portal->speedPortal) {
+            if (portal->speedVal <= 0.8f) s.xSpeed = Phys::SPEED_SLOW / 240.0f;
+            else if (portal->speedVal <= 0.95f) s.xSpeed = Phys::SPEED_NORMAL / 240.0f;
+            else if (portal->speedVal <= 1.05f) s.xSpeed = Phys::SPEED_FAST / 240.0f;
+            else if (portal->speedVal <= 1.15f) s.xSpeed = Phys::SPEED_FASTER / 240.0f;
+            else s.xSpeed = Phys::SPEED_FASTEST / 240.0f;
+        } else if (portal->isPortal) {
+            s.mode = portal->portalMode;
+            s.yVel *= 0.5f;
         }
-        else if (portal->isPortal) { s.mode = portal->portalMode; s.yVel *= 0.5f; }
     }
     
-    auto* pad = findPad(s.x, s.y);
+    LevelObj* pad = findPad(s.x, s.y);
     if (pad) {
         float b = 0;
         switch (pad->subType) {
-            case 0: b = 12; break; case 1: b = 16; break;
-            case 2: b = 20; break; case 3: b = -12; break;
+            case 0: b = 12.0f; break;
+            case 1: b = 16.0f; break;
+            case 2: b = 20.0f; break;
+            case 3: b = -12.0f; break;
             case 4: s.upsideDown = !s.upsideDown; break;
         }
-        if (b != 0) { s.yVel = s.upsideDown ? -b : b; s.onGround = false; }
+        if (b != 0) {
+            s.yVel = s.upsideDown ? -b : b;
+            s.onGround = false;
+        }
     }
     
     if (hold && s.orbCD <= 0) {
-        auto* orb = findOrb(s.x, s.y);
+        LevelObj* orb = findOrb(s.x, s.y);
         if (orb && orb->id != s.lastOrb) {
-            float b = 0; bool flip = false;
+            float b = 0;
+            bool flip = false;
             switch (orb->subType) {
-                case 0: b = 11.2f; break; case 1: b = 14; break;
-                case 2: b = 18; break;
-                case 3: flip = true; b = 8; break;
+                case 0: b = 11.2f; break;
+                case 1: b = 14.0f; break;
+                case 2: b = 18.0f; break;
+                case 3: flip = true; b = 8.0f; break;
                 case 4: flip = true; b = 11.2f; break;
-                case 6: case 7: b = 15; break;
+                case 6:
+                case 7: b = 15.0f; break;
             }
             if (flip) s.upsideDown = !s.upsideDown;
-            if (b != 0) { s.yVel = s.upsideDown ? -b : b; s.onGround = false; }
-            s.orbCD = 0.1f; s.lastOrb = orb->id;
+            if (b != 0) {
+                s.yVel = s.upsideDown ? -b : b;
+                s.onGround = false;
+            }
+            s.orbCD = 0.1f;
+            s.lastOrb = orb->id;
         }
     }
 }
@@ -509,12 +608,23 @@ void simInteract(SimState& s, bool hold) {
 // ============================================================================
 
 bool shouldBotClick() {
-    SimState base = {g_playerX, g_playerY, g_playerYVel, g_xSpeed,
-                     g_playerOnGround, true, g_isUpsideDown, g_isMini, g_gameMode, 0, -1};
+    SimState base;
+    base.x = g_playerX;
+    base.y = g_playerY;
+    base.yVel = g_playerYVel;
+    base.xSpeed = g_xSpeed;
+    base.onGround = g_playerOnGround;
+    base.canJump = true;
+    base.upsideDown = g_isUpsideDown;
+    base.mini = g_isMini;
+    base.mode = g_gameMode;
+    base.orbCD = 0;
+    base.lastOrb = -1;
     
     int frames = g_settings.simFrames;
     int holdF = g_settings.holdDuration;
     
+    // Simulate without clicking
     SimState sNo = base;
     int survNo = 0;
     for (int i = 0; i < frames; i++) {
@@ -524,6 +634,7 @@ bool shouldBotClick() {
         survNo++;
     }
     
+    // Simulate with clicking
     SimState sYes = base;
     int survYes = 0;
     for (int i = 0; i < frames; i++) {
@@ -538,7 +649,7 @@ bool shouldBotClick() {
 }
 
 // ============================================================================
-// OVERLAY
+// DEBUG OVERLAY
 // ============================================================================
 
 class BotOverlay : public CCNode {
@@ -549,9 +660,12 @@ public:
     CCDrawNode* m_draw = nullptr;
     
     static BotOverlay* create() {
-        auto* r = new BotOverlay();
-        if (r && r->init()) { r->autorelease(); return r; }
-        CC_SAFE_DELETE(r);
+        BotOverlay* ret = new BotOverlay();
+        if (ret && ret->init()) {
+            ret->autorelease();
+            return ret;
+        }
+        CC_SAFE_DELETE(ret);
         return nullptr;
     }
     
@@ -563,17 +677,17 @@ public:
         
         m_lbl1 = CCLabelBMFont::create("Bot: OFF", "bigFont.fnt");
         m_lbl1->setScale(0.4f);
-        m_lbl1->setAnchorPoint({0,1});
+        m_lbl1->setAnchorPoint(ccp(0, 1));
         addChild(m_lbl1, 100);
         
         m_lbl2 = CCLabelBMFont::create("", "chatFont.fnt");
         m_lbl2->setScale(0.5f);
-        m_lbl2->setAnchorPoint({0,1});
+        m_lbl2->setAnchorPoint(ccp(0, 1));
         addChild(m_lbl2, 100);
         
         m_lbl3 = CCLabelBMFont::create("", "chatFont.fnt");
         m_lbl3->setScale(0.5f);
-        m_lbl3->setAnchorPoint({0,1});
+        m_lbl3->setAnchorPoint(ccp(0, 1));
         addChild(m_lbl3, 100);
         
         scheduleUpdate();
@@ -581,21 +695,17 @@ public:
     }
     
     void update(float dt) override {
-        auto* pl = PlayLayer::get();
+        PlayLayer* pl = PlayLayer::get();
         if (!pl) return;
         
-        // Get camera position
-        float camX = 0, camY = 0;
-        if (auto* cam = pl->m_gameState.m_cameraPosition) {
-            // This might not work - try alternative
-        }
-        // Alternative: use player position
-        camX = g_playerX - 200;
-        camY = 0;
+        // Estimate camera position based on player
+        float camX = g_playerX - 200.0f;
+        float camY = 0.0f;
         
-        m_lbl1->setPosition(ccp(camX + 5, camY + 320));
-        m_lbl2->setPosition(ccp(camX + 5, camY + 295));
-        m_lbl3->setPosition(ccp(camX + 5, camY + 275));
+        // Position labels to follow camera
+        m_lbl1->setPosition(ccp(camX + 5.0f, camY + 320.0f));
+        m_lbl2->setPosition(ccp(camX + 5.0f, camY + 295.0f));
+        m_lbl3->setPosition(ccp(camX + 5.0f, camY + 275.0f));
         
         m_lbl1->setVisible(g_settings.debugOverlay);
         m_lbl2->setVisible(g_settings.debugOverlay);
@@ -603,62 +713,102 @@ public:
         
         if (g_settings.debugOverlay) {
             m_lbl1->setString(g_botEnabled ? "Bot: ON" : "Bot: OFF");
-            m_lbl1->setColor(g_botEnabled ? ccc3(0,255,0) : ccc3(255,100,100));
+            m_lbl1->setColor(g_botEnabled ? ccc3(0, 255, 0) : ccc3(255, 100, 100));
             
             char buf[128];
-            snprintf(buf, 128, "X:%.0f Y:%.0f Vel:%.1f", g_playerX, g_playerY, g_playerYVel);
+            snprintf(buf, sizeof(buf), "X:%.0f Y:%.0f Vel:%.1f", g_playerX, g_playerY, g_playerYVel);
             m_lbl2->setString(buf);
             
-            const char* modes[] = {"Cube","Ship","Ball","UFO","Wave","Robot","Spider","Swing"};
-            snprintf(buf, 128, "%s %s Clicks:%d Best:%.1f%%",
-                modes[(int)g_gameMode], g_playerOnGround?"[G]":"[A]", g_totalClicks, g_bestProgress);
+            const char* modes[] = {"Cube", "Ship", "Ball", "UFO", "Wave", "Robot", "Spider", "Swing"};
+            snprintf(buf, sizeof(buf), "%s %s Clicks:%d Best:%.1f%%",
+                modes[static_cast<int>(g_gameMode)],
+                g_playerOnGround ? "[G]" : "[A]",
+                g_totalClicks,
+                g_bestProgress);
             m_lbl3->setString(buf);
         }
         
+        // Debug drawing
         m_draw->clear();
         if (!g_settings.debugDraw || !g_levelAnalyzed) return;
         
+        // Draw player hitbox
         float psz = getPlayerSize();
         m_draw->drawRect(
-            ccp(g_playerX - psz/2, g_playerY - psz/2),
-            ccp(g_playerX + psz/2, g_playerY + psz/2),
-            ccc4f(1,1,1,0.3f), 1, ccc4f(1,1,1,0.8f));
+            ccp(g_playerX - psz / 2.0f, g_playerY - psz / 2.0f),
+            ccp(g_playerX + psz / 2.0f, g_playerY + psz / 2.0f),
+            ccc4f(1, 1, 1, 0.3f),
+            1.0f,
+            ccc4f(1, 1, 1, 0.8f));
         
-        for (auto* h : g_hazards) {
-            if (h->x < g_playerX - 100 || h->x > g_playerX + 400) continue;
-            float hw = (h->w * g_settings.hazardHitboxScale) / 2;
-            float hh = (h->h * g_settings.hazardHitboxScale) / 2;
+        // Draw hazards
+        for (const LevelObj* h : g_hazards) {
+            if (h->x < g_playerX - 100.0f || h->x > g_playerX + 400.0f) continue;
+            float hw = (h->w * g_settings.hazardHitboxScale) / 2.0f;
+            float hh = (h->h * g_settings.hazardHitboxScale) / 2.0f;
             m_draw->drawRect(
                 ccp(h->x - hw, h->y - hh),
                 ccp(h->x + hw, h->y + hh),
-                ccc4f(1,0,0,0.2f), 1, ccc4f(1,0,0,0.6f));
+                ccc4f(1, 0, 0, 0.2f),
+                1.0f,
+                ccc4f(1, 0, 0, 0.6f));
         }
         
-        for (auto* o : g_orbs) {
-            if (o->x < g_playerX - 100 || o->x > g_playerX + 300) continue;
-            m_draw->drawDot(ccp(o->x, o->y), 8, ccc4f(1,1,0,0.6f));
+        // Draw orbs
+        for (const LevelObj* o : g_orbs) {
+            if (o->x < g_playerX - 100.0f || o->x > g_playerX + 300.0f) continue;
+            m_draw->drawDot(ccp(o->x, o->y), 8.0f, ccc4f(1, 1, 0, 0.6f));
         }
         
-        for (auto* p : g_pads) {
-            if (p->x < g_playerX - 100 || p->x > g_playerX + 300) continue;
-            m_draw->drawDot(ccp(p->x, p->y), 6, ccc4f(1,0,1,0.6f));
+        // Draw pads
+        for (const LevelObj* p : g_pads) {
+            if (p->x < g_playerX - 100.0f || p->x > g_playerX + 300.0f) continue;
+            m_draw->drawDot(ccp(p->x, p->y), 6.0f, ccc4f(1, 0, 1, 0.6f));
         }
         
-        SimState sNo = {g_playerX, g_playerY, g_playerYVel, g_xSpeed,
-                        g_playerOnGround, true, g_isUpsideDown, g_isMini, g_gameMode, 0, -1};
+        // Draw trajectory without clicking (red)
+        SimState sNo;
+        sNo.x = g_playerX;
+        sNo.y = g_playerY;
+        sNo.yVel = g_playerYVel;
+        sNo.xSpeed = g_xSpeed;
+        sNo.onGround = g_playerOnGround;
+        sNo.canJump = true;
+        sNo.upsideDown = g_isUpsideDown;
+        sNo.mini = g_isMini;
+        sNo.mode = g_gameMode;
+        sNo.orbCD = 0;
+        sNo.lastOrb = -1;
+        
         for (int i = 0; i < 50; i++) {
-            float ox = sNo.x, oy = sNo.y;
+            float ox = sNo.x;
+            float oy = sNo.y;
             simFrame(sNo, false);
-            m_draw->drawSegment(ccp(ox,oy), ccp(sNo.x,sNo.y), 1.5f, ccc4f(1,0.3f,0.3f, 0.7f*(1-i/50.0f)));
+            float alpha = 0.7f * (1.0f - static_cast<float>(i) / 50.0f);
+            m_draw->drawSegment(ccp(ox, oy), ccp(sNo.x, sNo.y), 1.5f, ccc4f(1, 0.3f, 0.3f, alpha));
             if (willHitHazard(sNo.x, sNo.y)) break;
         }
         
-        SimState sYes = {g_playerX, g_playerY, g_playerYVel, g_xSpeed,
-                         g_playerOnGround, true, g_isUpsideDown, g_isMini, g_gameMode, 0, -1};
+        // Draw trajectory with clicking (green)
+        SimState sYes;
+        sYes.x = g_playerX;
+        sYes.y = g_playerY;
+        sYes.yVel = g_playerYVel;
+        sYes.xSpeed = g_xSpeed;
+        sYes.onGround = g_playerOnGround;
+        sYes.canJump = true;
+        sYes.upsideDown = g_isUpsideDown;
+        sYes.mini = g_isMini;
+        sYes.mode = g_gameMode;
+        sYes.orbCD = 0;
+        sYes.lastOrb = -1;
+        
         for (int i = 0; i < 50; i++) {
-            float ox = sYes.x, oy = sYes.y;
+            float ox = sYes.x;
+            float oy = sYes.y;
             simFrame(sYes, i < g_settings.holdDuration);
-            m_draw->drawSegment(ccp(ox,oy), ccp(sYes.x,sYes.y), 1.5f, ccc4f(0.3f,1,0.3f, 0.7f*(1-i/50.0f)));
+            float alpha = 0.7f * (1.0f - static_cast<float>(i) / 50.0f);
+            m_draw->drawSegment(ccp(ox, oy), ccp(sYes.x, sYes.y), 1.5f, ccc4f(0.3f, 1, 0.3f, alpha));
             if (willHitHazard(sYes.x, sYes.y)) break;
         }
     }
@@ -676,11 +826,16 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
         
         g_frameCounter++;
         
-        auto* pl = PlayLayer::get();
-        if (!pl || !g_botEnabled || !m_player1) return;
-        if (pl->m_isPaused || pl->m_hasCompletedLevel || m_player1->m_isDead) return;
+        PlayLayer* pl = PlayLayer::get();
+        if (!pl) return;
+        if (!g_botEnabled) return;
+        if (!m_player1) return;
+        if (pl->m_isPaused) return;
+        if (pl->m_hasCompletedLevel) return;
+        if (m_player1->m_isDead) return;
         if (!g_levelAnalyzed) return;
         
+        // Read player state
         g_playerX = m_player1->getPositionX();
         g_playerY = m_player1->getPositionY();
         g_playerYVel = m_player1->m_yVelocity;
@@ -688,6 +843,7 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
         g_isUpsideDown = m_player1->m_isUpsideDown;
         g_isMini = m_player1->m_vehicleSize != 1.0f;
         
+        // Determine gamemode
         if (m_player1->m_isShip) g_gameMode = BotGameMode::Ship;
         else if (m_player1->m_isBall) g_gameMode = BotGameMode::Ball;
         else if (m_player1->m_isBird) g_gameMode = BotGameMode::UFO;
@@ -697,21 +853,27 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
         else if (m_player1->m_isSwing) g_gameMode = BotGameMode::Swing;
         else g_gameMode = BotGameMode::Cube;
         
+        // Determine speed
         float spd = m_player1->m_playerSpeed;
-        if (spd <= 0.8f) g_xSpeed = Phys::SPEED_SLOW/240;
-        else if (spd <= 0.95f) g_xSpeed = Phys::SPEED_NORMAL/240;
-        else if (spd <= 1.05f) g_xSpeed = Phys::SPEED_FAST/240;
-        else if (spd <= 1.15f) g_xSpeed = Phys::SPEED_FASTER/240;
-        else g_xSpeed = Phys::SPEED_FASTEST/240;
+        if (spd <= 0.8f) g_xSpeed = Phys::SPEED_SLOW / 240.0f;
+        else if (spd <= 0.95f) g_xSpeed = Phys::SPEED_NORMAL / 240.0f;
+        else if (spd <= 1.05f) g_xSpeed = Phys::SPEED_FAST / 240.0f;
+        else if (spd <= 1.15f) g_xSpeed = Phys::SPEED_FASTER / 240.0f;
+        else g_xSpeed = Phys::SPEED_FASTEST / 240.0f;
         
-        float prog = (g_playerX / pl->m_levelLength) * 100;
+        // Track progress
+        float prog = (g_playerX / pl->m_levelLength) * 100.0f;
         if (prog > g_bestProgress) g_bestProgress = prog;
         
         // Reload settings periodically
-        if (g_frameCounter % 120 == 0) g_settings.load();
+        if (g_frameCounter % 120 == 0) {
+            g_settings.load();
+        }
         
+        // Bot decision
         bool click = shouldBotClick();
         
+        // Apply input
         if (click != g_isHolding) {
             this->handleButton(click, 1, true);
             g_isHolding = click;
@@ -732,7 +894,7 @@ class $modify(BotPlayLayer, PlayLayer) {
         g_isHolding = false;
         g_frameCounter = 0;
         g_totalClicks = 0;
-        g_bestProgress = 0;
+        g_bestProgress = 0.0f;
         g_settings.load();
         
         g_overlay = BotOverlay::create();
@@ -752,21 +914,30 @@ class $modify(BotPlayLayer, PlayLayer) {
         g_attempts++;
         g_frameCounter = 0;
         g_totalClicks = 0;
+        
         if (g_isHolding) {
-            if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
+            GJBaseGameLayer* gj = GJBaseGameLayer::get();
+            if (gj) gj->handleButton(false, 1, true);
             g_isHolding = false;
         }
-        if (!g_levelAnalyzed) analyzeLevel(this);
+        
+        if (!g_levelAnalyzed) {
+            analyzeLevel(this);
+        }
     }
     
     void levelComplete() {
         PlayLayer::levelComplete();
-        Notification::create(fmt::format("Bot Complete! {} clicks", g_totalClicks), NotificationIcon::Success)->show();
+        Notification::create(
+            fmt::format("Bot Complete! {} clicks", g_totalClicks),
+            NotificationIcon::Success
+        )->show();
     }
     
     void onQuit() {
         if (g_isHolding) {
-            if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
+            GJBaseGameLayer* gj = GJBaseGameLayer::get();
+            if (gj) gj->handleButton(false, 1, true);
             g_isHolding = false;
         }
         g_levelAnalyzed = false;
@@ -783,40 +954,47 @@ class $modify(BotPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
         
-        auto ws = CCDirector::sharedDirector()->getWinSize();
-        auto* menu = CCMenu::create();
-        menu->setPosition({0,0});
+        CCSize ws = CCDirector::sharedDirector()->getWinSize();
+        
+        CCMenu* menu = CCMenu::create();
+        menu->setPosition(ccp(0, 0));
         addChild(menu, 100);
         
-        auto* on1 = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
-        auto* off1 = CCSprite::createWithSpriteFrameName("GJ_checkOff_001.png");
-        auto* t1 = CCMenuItemToggler::create(off1, on1, this, menu_selector(BotPauseLayer::onBot));
-        t1->setPosition({ws.width-30, ws.height-30});
+        // Bot toggle
+        CCSprite* on1 = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
+        CCSprite* off1 = CCSprite::createWithSpriteFrameName("GJ_checkOff_001.png");
+        CCMenuItemToggler* t1 = CCMenuItemToggler::create(off1, on1, this, menu_selector(BotPauseLayer::onBot));
+        t1->setPosition(ccp(ws.width - 30.0f, ws.height - 30.0f));
         t1->toggle(g_botEnabled);
         menu->addChild(t1);
         
-        auto* l1 = CCLabelBMFont::create("Bot", "bigFont.fnt");
+        CCLabelBMFont* l1 = CCLabelBMFont::create("Bot", "bigFont.fnt");
         l1->setScale(0.35f);
-        l1->setPosition({ws.width-30, ws.height-50});
+        l1->setPosition(ccp(ws.width - 30.0f, ws.height - 50.0f));
         addChild(l1, 100);
         
-        auto* settingsBtn = CCMenuItemSpriteExtra::create(
-            CCSprite::createWithSpriteFrameName("GJ_optionsBtn_001.png"),
-            this, menu_selector(BotPauseLayer::onSettings));
-        settingsBtn->setPosition({ws.width-30, ws.height-90});
+        // Settings button
+        CCSprite* settingsSprite = CCSprite::createWithSpriteFrameName("GJ_optionsBtn_001.png");
+        CCMenuItemSpriteExtra* settingsBtn = CCMenuItemSpriteExtra::create(
+            settingsSprite,
+            this,
+            menu_selector(BotPauseLayer::onSettings)
+        );
+        settingsBtn->setPosition(ccp(ws.width - 30.0f, ws.height - 90.0f));
         settingsBtn->setScale(0.6f);
         menu->addChild(settingsBtn);
     }
     
-    void onBot(CCObject*) {
+    void onBot(CCObject* sender) {
         g_botEnabled = !g_botEnabled;
         if (!g_botEnabled && g_isHolding) {
-            if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
+            GJBaseGameLayer* gj = GJBaseGameLayer::get();
+            if (gj) gj->handleButton(false, 1, true);
             g_isHolding = false;
         }
     }
     
-    void onSettings(CCObject*) {
+    void onSettings(CCObject* sender) {
         openSettingsPopup(Mod::get());
     }
 };
@@ -830,11 +1008,14 @@ class $modify(CCKeyboardDispatcher) {
         if (down && !repeat && key == KEY_F8) {
             g_botEnabled = !g_botEnabled;
             if (!g_botEnabled && g_isHolding) {
-                if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
+                GJBaseGameLayer* gj = GJBaseGameLayer::get();
+                if (gj) gj->handleButton(false, 1, true);
                 g_isHolding = false;
             }
-            Notification::create(g_botEnabled ? "Bot: ON" : "Bot: OFF",
-                g_botEnabled ? NotificationIcon::Success : NotificationIcon::Info)->show();
+            Notification::create(
+                g_botEnabled ? "Bot: ON" : "Bot: OFF",
+                g_botEnabled ? NotificationIcon::Success : NotificationIcon::Info
+            )->show();
             return true;
         }
         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat);
@@ -842,10 +1023,12 @@ class $modify(CCKeyboardDispatcher) {
 };
 
 // ============================================================================
-// INIT
+// MOD INITIALIZATION
 // ============================================================================
 
 $on_mod(Loaded) {
-    log::info("GD AutoBot loaded! F8=Toggle, Settings in pause menu");
+    log::info("GD AutoBot loaded!");
+    log::info("  F8 = Toggle Bot");
+    log::info("  Settings available in pause menu");
     g_settings.load();
 }
