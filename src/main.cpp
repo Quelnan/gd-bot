@@ -69,7 +69,6 @@ public:
             m_logFile.flush();
         }
         
-        // Geode logging
         if (level == "ERROR") {
             log::error("{}", message);
         } else if (level == "WARN") {
@@ -118,17 +117,14 @@ namespace GDConst {
     constexpr double PHYSICS_DT = 1.0 / PHYSICS_FPS;
     constexpr double BLOCK_SIZE = 30.0;
     
-    // Gravity
     constexpr double GRAVITY = 0.958199;
     
-    // X velocities per speed
     constexpr double XVEL_SLOW = 5.770002 * 0.7;
     constexpr double XVEL_NORMAL = 5.770002;
     constexpr double XVEL_FAST = 5.770002 * 1.243;
     constexpr double XVEL_FASTER = 5.770002 * 1.502;
     constexpr double XVEL_FASTEST = 5.770002 * 1.849;
     
-    // Jump velocities
     constexpr double CUBE_JUMP = 11.180032;
     constexpr double SHIP_ACCEL = 0.8;
     constexpr double SHIP_GRAVITY = 0.5;
@@ -140,7 +136,6 @@ namespace GDConst {
     constexpr double SWING_ACCEL = 0.9;
     constexpr double SWING_GRAVITY = 0.6;
     
-    // Hitbox sizes
     constexpr double CUBE_SIZE = 25.0;
     constexpr double SHIP_WIDTH = 25.0;
     constexpr double SHIP_HEIGHT = 20.0;
@@ -488,7 +483,6 @@ public:
             SimObj simObj;
             simObj.id = objID;
             
-            // Use CCNode methods for flip detection (Geode 4.x compatible)
             simObj.flipX = obj->isFlipX();
             simObj.flipY = obj->isFlipY();
             simObj.rot = obj->getRotation();
@@ -497,7 +491,6 @@ public:
             double h = size.height * scaleY;
             simObj.hitbox = Rect(pos.x - w/2, pos.y - h/2, w, h);
             
-            // Categorize object
             if (ObjIDs::isHazard(objID)) {
                 simObj.type = ObjType::Hazard;
                 
@@ -1155,6 +1148,13 @@ public:
 };
 
 // ============================================================================
+// GLOBAL INPUT STATE FOR REPLAY
+// ============================================================================
+
+static bool g_replayInput = false;
+static bool g_replayActive = false;
+
+// ============================================================================
 // HOOKS
 // ============================================================================
 
@@ -1179,22 +1179,28 @@ class $modify(PFPlayLayer, PlayLayer) {
         
         if (rp.isPlaying()) {
             bool inp = rp.getInput();
+            g_replayInput = inp;
+            g_replayActive = true;
             
-            // Use GJBaseGameLayer methods for input (Geode 4.x compatible)
-            if (inp && !m_fields->m_inputActive) {
-                // Simulate click by directly calling the player jump
-                if (m_player1) {
-                    GJBaseGameLayer::pushButton(1, true);
+            // Direct player control using setters
+            if (m_player1) {
+                if (inp && !m_fields->m_inputActive) {
+                    m_player1->m_isHolding = true;
+                    m_player1->m_hasJustHeld = true;
+                    m_fields->m_inputActive = true;
+                } else if (!inp && m_fields->m_inputActive) {
+                    m_player1->m_isHolding = false;
+                    m_player1->m_hasJustHeld = false;
+                    m_fields->m_inputActive = false;
+                } else if (inp) {
+                    m_player1->m_isHolding = true;
+                    m_player1->m_hasJustHeld = false;
                 }
-                m_fields->m_inputActive = true;
-            } else if (!inp && m_fields->m_inputActive) {
-                if (m_player1) {
-                    GJBaseGameLayer::releaseButton(1, true);
-                }
-                m_fields->m_inputActive = false;
             }
             
             rp.advance();
+        } else {
+            g_replayActive = false;
         }
         
         PlayLayer::update(dt);
