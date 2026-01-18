@@ -1,5 +1,5 @@
 {
-    "geode": "3.4.0",
+    "geode": "3.0.0",
     "gd": {
         "win": "2.206",
         "android": "2.206",
@@ -8,10 +8,8 @@
     "id": "quelnan.gdpathfinder",
     "name": "GD Pathfinder",
     "version": "v1.0.0",
-    "developer": "Quelnan",
+    "developer": "quelnan",
     "description": "Automatic level pathfinder with GD physics simulation",
-    "repository": "https://github.com/yourusername/gd-pathfinder",
-    "dependencies": [],
     "resources": {
         "files": []
     },
@@ -20,7 +18,7 @@
             "name": "Beam Width",
             "description": "Number of states to keep during search",
             "type": "int",
-            "default": 5000,
+            "default": 3000,
             "min": 100,
             "max": 50000
         }

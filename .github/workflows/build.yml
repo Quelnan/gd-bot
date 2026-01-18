@@ -38,7 +38,7 @@ jobs:
         with:
           target: ${{ matrix.config.target }}
           combine: true
-          sdk: v3.4.0
+          sdk: nightly
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
