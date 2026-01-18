@@ -2,86 +2,89 @@
   "geode": "4.10.0",
   "gd": { "win": "2.2074" },
   "id": "developer.gdbot",
-  "name": "GD AutoBot Trainer",
+  "name": "GD AutoBot Trainer (Deterministic)",
   "version": "v1.0.0",
   "developer": "Developer",
-  "description": "Speedhack training bot that learns by mutating inputs and replays the best path at normal speed",
+  "description": "Fast-forward trainer that evolves an input path using real engine collisions, then replays best at normal speed",
   "settings": {
-    "enabled": {
-      "name": "Enabled",
-      "description": "Enable the bot",
-      "type": "bool",
-      "default": false
-    },
-    "mode": {
-      "name": "Mode",
-      "description": "0=Off, 1=Train+Verify",
+    "enabled": { "name": "Enabled", "type": "bool", "default": false },
+
+    "updates-per-frame": {
+      "name": "Training Speed (updates per frame)",
+      "description": "How many real GD updates to execute per rendered frame (100 = ~100x if CPU can keep up). Deterministic.",
       "type": "int",
-      "default": 1,
-      "min": 0,
-      "max": 1
+      "default": 30,
+      "min": 1,
+      "max": 300
     },
-    "train-timescale": {
-      "name": "Train Speed (timescale)",
-      "description": "Higher = faster attempts, but may reduce determinism",
-      "type": "float",
-      "default": 3.0,
-      "min": 1.0,
-      "max": 10.0
-    },
-    "restart-delay-frames": {
-      "name": "Restart Delay (frames)",
-      "description": "Frames to wait after death before resetting",
+    "inner-time-budget-ms": {
+      "name": "Inner Time Budget (ms)",
+      "description": "Limits CPU time per rendered frame so the game doesn’t freeze.",
       "type": "int",
-      "default": 10,
-      "min": 0,
-      "max": 120
+      "default": 8,
+      "min": 1,
+      "max": 30
     },
+
     "max-frames": {
       "name": "Max Frames Per Attempt",
-      "description": "Stops runaway attempts; larger for long levels",
+      "description": "Failsafe; restarts if attempt runs too long.",
       "type": "int",
       "default": 300000,
       "min": 10000,
       "max": 1000000
     },
+
     "mutation-window": {
       "name": "Mutation Window (frames)",
-      "description": "Mutations concentrate around death frame ± window",
+      "description": "Mutate around the last death frame ± window.",
       "type": "int",
       "default": 240,
       "min": 30,
+      "max": 5000
+    },
+    "prefix-lock-margin": {
+      "name": "Prefix Lock Margin (frames)",
+      "description": "How many frames BEFORE best death remain mutable. Higher = less stable, lower = more stable.",
+      "type": "int",
+      "default": 30,
+      "min": 0,
       "max": 2000
     },
-    "mutation-rate": {
-      "name": "Mutation Rate",
-      "description": "Probability of flipping a frame input inside the mutation window",
-      "type": "float",
-      "default": 0.02,
-      "min": 0.0,
-      "max": 0.5
+
+    "mutation-ops": {
+      "name": "Mutation Ops Per Attempt",
+      "description": "How many tap insert/remove edits to apply each new attempt.",
+      "type": "int",
+      "default": 40,
+      "min": 1,
+      "max": 500
     },
-    "seed-tap-rate": {
-      "name": "Seed Tap Density",
-      "description": "How often random taps are inserted in a new genome (lower = fewer taps)",
-      "type": "float",
-      "default": 0.003,
-      "min": 0.0005,
-      "max": 0.05
-    },
-    "tap-length-frames": {
+    "tap-length": {
       "name": "Tap Length (frames)",
-      "description": "How long each inserted tap holds",
+      "description": "How long an inserted tap holds.",
       "type": "int",
       "default": 2,
       "min": 1,
       "max": 20
     },
-    "log-status": {
-      "name": "Log Status",
-      "description": "Print periodic training status to console",
+
+    "seed-tap-rate": {
+      "name": "Seed Tap Density",
+      "description": "How often taps appear in the first attempt (lower = fewer taps).",
+      "type": "float",
+      "default": 0.002,
+      "min": 0.0001,
+      "max": 0.05
+    },
+
+    "verify-after-win": {
+      "name": "Verify After Win",
+      "description": "After a win, replay best at normal speed to confirm.",
       "type": "bool",
       "default": true
-    }
+    },
+
+    "log-status": { "name": "Log Status", "type": "bool", "default": true }
   }
 }
