@@ -3,6 +3,7 @@
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/PauseLayer.hpp>
+#include <Geode/ui/GeodeUI.hpp>
 #include <vector>
 #include <set>
 #include <map>
@@ -51,14 +52,15 @@ struct BotSettings {
     bool debugDraw = false;
     
     void load() {
-        simFrames = static_cast<int>(Mod::get()->getSettingValue<int64_t>("sim-frames"));
-        holdDuration = static_cast<int>(Mod::get()->getSettingValue<int64_t>("hold-duration"));
-        hitboxScale = static_cast<float>(Mod::get()->getSettingValue<double>("hitbox-scale"));
-        hazardHitboxScale = static_cast<float>(Mod::get()->getSettingValue<double>("hazard-hitbox-scale"));
-        safeMargin = static_cast<float>(Mod::get()->getSettingValue<double>("safe-margin"));
-        reactionDistance = static_cast<float>(Mod::get()->getSettingValue<double>("reaction-distance"));
-        debugOverlay = Mod::get()->getSettingValue<bool>("debug-overlay");
-        debugDraw = Mod::get()->getSettingValue<bool>("debug-draw");
+        auto* mod = Mod::get();
+        simFrames = static_cast<int>(mod->getSettingValue<int64_t>("sim-frames"));
+        holdDuration = static_cast<int>(mod->getSettingValue<int64_t>("hold-duration"));
+        hitboxScale = static_cast<float>(mod->getSettingValue<double>("hitbox-scale"));
+        hazardHitboxScale = static_cast<float>(mod->getSettingValue<double>("hazard-hitbox-scale"));
+        safeMargin = static_cast<float>(mod->getSettingValue<double>("safe-margin"));
+        reactionDistance = static_cast<float>(mod->getSettingValue<double>("reaction-distance"));
+        debugOverlay = mod->getSettingValue<bool>("debug-overlay");
+        debugDraw = mod->getSettingValue<bool>("debug-draw");
     }
 };
 
@@ -74,7 +76,6 @@ struct HitboxInfo {
 };
 
 static const std::map<int, HitboxInfo> HITBOX_DATA = {
-    // Spikes (triangular)
     {8, {20, 20, true}}, {39, {20, 20, true}}, {103, {20, 20, true}},
     {392, {12, 12, true}}, {9, {24, 24, true}}, {61, {24, 24, true}},
     {243, {20, 20, true}}, {244, {20, 20, true}}, {245, {20, 20, true}},
@@ -86,7 +87,6 @@ static const std::map<int, HitboxInfo> HITBOX_DATA = {
     {1711, {20, 20, true}}, {1712, {20, 20, true}}, {1713, {20, 20, true}},
     {1714, {20, 20, true}}, {1715, {20, 20, true}}, {1716, {20, 20, true}},
     {1717, {20, 20, true}}, {1718, {20, 20, true}},
-    // Saws (circular -> square approximation)
     {363, {45, 45, false}}, {364, {60, 60, false}}, {365, {75, 75, false}},
     {366, {45, 45, false}}, {367, {60, 60, false}}, {368, {75, 75, false}},
 };
@@ -120,16 +120,16 @@ static const std::map<int, BotGameMode> PORTAL_IDS = {
 // ============================================================================
 
 struct LevelObj {
-    int id;
-    float x, y, w, h, rot, scaleX, scaleY;
-    bool triangle;
-    bool isHazard, isOrb, isPad, isPortal;
-    int subType;
-    BotGameMode portalMode;
-    bool gravityPortal, gravityUp;
-    bool sizePortal, sizeMini;
-    bool speedPortal;
-    float speedVal;
+    int id = 0;
+    float x = 0, y = 0, w = 0, h = 0, rot = 0, scaleX = 1, scaleY = 1;
+    bool triangle = false;
+    bool isHazard = false, isOrb = false, isPad = false, isPortal = false;
+    int subType = 0;
+    BotGameMode portalMode = BotGameMode::Cube;
+    bool gravityPortal = false, gravityUp = false;
+    bool sizePortal = false, sizeMini = false;
+    bool speedPortal = false;
+    float speedVal = 1.0f;
 };
 
 static std::vector<LevelObj> g_objects;
@@ -156,7 +156,6 @@ namespace Phys {
     constexpr float PLAYER_SIZE = 30.0f;
     constexpr float MINI_SCALE = 0.6f;
     constexpr float WAVE_SCALE = 0.5f;
-    
     constexpr float SPEED_SLOW = 251.16f;
     constexpr float SPEED_NORMAL = 311.58f;
     constexpr float SPEED_FAST = 387.42f;
@@ -184,7 +183,7 @@ void analyzeLevel(PlayLayer* pl) {
         
         int id = obj->m_objectID;
         
-        LevelObj lo = {};
+        LevelObj lo;
         lo.id = id;
         lo.x = obj->getPositionX();
         lo.y = obj->getPositionY();
@@ -202,7 +201,6 @@ void analyzeLevel(PlayLayer* pl) {
             float sc = obj->getScale();
             lo.w = sz.width * sc * 0.8f;
             lo.h = sz.height * sc * 0.8f;
-            lo.triangle = false;
         }
         
         lo.w = std::max(lo.w, 5.0f);
@@ -540,7 +538,7 @@ bool shouldBotClick() {
 }
 
 // ============================================================================
-// OVERLAY - Fixed to follow camera
+// OVERLAY
 // ============================================================================
 
 class BotOverlay : public CCNode {
@@ -586,21 +584,18 @@ public:
         auto* pl = PlayLayer::get();
         if (!pl) return;
         
-        g_settings.load();
-        
         // Get camera position
-        CCPoint camPos = CCPointZero;
-        if (pl->m_gameState.m_cameraPosition.x != 0 || pl->m_gameState.m_cameraPosition.y != 0) {
-            camPos = ccp(pl->m_gameState.m_cameraPosition.x, pl->m_gameState.m_cameraPosition.y);
-        } else {
-            // Fallback: estimate camera from player position
-            camPos = ccp(g_playerX - 200, 0);
+        float camX = 0, camY = 0;
+        if (auto* cam = pl->m_gameState.m_cameraPosition) {
+            // This might not work - try alternative
         }
+        // Alternative: use player position
+        camX = g_playerX - 200;
+        camY = 0;
         
-        // Position labels relative to camera (screen-space)
-        m_lbl1->setPosition(ccp(camPos.x + 5, camPos.y + 320));
-        m_lbl2->setPosition(ccp(camPos.x + 5, camPos.y + 295));
-        m_lbl3->setPosition(ccp(camPos.x + 5, camPos.y + 275));
+        m_lbl1->setPosition(ccp(camX + 5, camY + 320));
+        m_lbl2->setPosition(ccp(camX + 5, camY + 295));
+        m_lbl3->setPosition(ccp(camX + 5, camY + 275));
         
         m_lbl1->setVisible(g_settings.debugOverlay);
         m_lbl2->setVisible(g_settings.debugOverlay);
@@ -623,14 +618,12 @@ public:
         m_draw->clear();
         if (!g_settings.debugDraw || !g_levelAnalyzed) return;
         
-        // Draw player hitbox (world coordinates - will move with level)
         float psz = getPlayerSize();
         m_draw->drawRect(
             ccp(g_playerX - psz/2, g_playerY - psz/2),
             ccp(g_playerX + psz/2, g_playerY + psz/2),
             ccc4f(1,1,1,0.3f), 1, ccc4f(1,1,1,0.8f));
         
-        // Draw hazards (world coordinates)
         for (auto* h : g_hazards) {
             if (h->x < g_playerX - 100 || h->x > g_playerX + 400) continue;
             float hw = (h->w * g_settings.hazardHitboxScale) / 2;
@@ -641,19 +634,16 @@ public:
                 ccc4f(1,0,0,0.2f), 1, ccc4f(1,0,0,0.6f));
         }
         
-        // Draw orbs
         for (auto* o : g_orbs) {
             if (o->x < g_playerX - 100 || o->x > g_playerX + 300) continue;
             m_draw->drawDot(ccp(o->x, o->y), 8, ccc4f(1,1,0,0.6f));
         }
         
-        // Draw pads
         for (auto* p : g_pads) {
             if (p->x < g_playerX - 100 || p->x > g_playerX + 300) continue;
             m_draw->drawDot(ccp(p->x, p->y), 6, ccc4f(1,0,1,0.6f));
         }
         
-        // Draw trajectories (world coordinates)
         SimState sNo = {g_playerX, g_playerY, g_playerYVel, g_xSpeed,
                         g_playerOnGround, true, g_isUpsideDown, g_isMini, g_gameMode, 0, -1};
         for (int i = 0; i < 50; i++) {
@@ -716,6 +706,9 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
         
         float prog = (g_playerX / pl->m_levelLength) * 100;
         if (prog > g_bestProgress) g_bestProgress = prog;
+        
+        // Reload settings periodically
+        if (g_frameCounter % 120 == 0) g_settings.load();
         
         bool click = shouldBotClick();
         
@@ -824,7 +817,7 @@ class $modify(BotPauseLayer, PauseLayer) {
     }
     
     void onSettings(CCObject*) {
-        geode::openSettingsPopup(Mod::get());
+        openSettingsPopup(Mod::get());
     }
 };
 
