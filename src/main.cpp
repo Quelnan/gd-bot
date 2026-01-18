@@ -422,6 +422,7 @@ class Simulator {
 private:
     LevelData m_level;
     std::mutex m_mutex;
+    bool m_loaded = false;
     
     double getXVel(SpeedType s) const {
         switch (s) {
@@ -452,42 +453,104 @@ public:
         return inst;
     }
     
-    void loadLevel(GJBaseGameLayer* layer) {
+    bool isLoaded() const { return m_loaded; }
+    
+    void loadFromPlayLayer(PlayLayer* layer) {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_level.clear();
+        m_loaded = false;
         
-        LOG_INFO("Loading level...");
+        LOG_INFO("Loading level from PlayLayer...");
         
-        if (!layer || !layer->m_objects) {
-            LOG_ERROR("Invalid layer or objects!");
+        if (!layer) {
+            LOG_ERROR("PlayLayer is null!");
             return;
         }
         
-        auto* objects = layer->m_objects;
+        // Try multiple ways to get objects
+        CCArray* objects = nullptr;
+        
+        // Method 1: m_objects
+        if (layer->m_objects && layer->m_objects->count() > 0) {
+            objects = layer->m_objects;
+            LOG_INFOF("Found {} objects in m_objects", objects->count());
+        }
+        
+        // Method 2: getAllObjects if available - iterate through object layer
+        if (!objects || objects->count() == 0) {
+            // Try to get from the game object manager or batch nodes
+            if (auto batchNode = layer->m_objectLayer) {
+                CCArray* children = batchNode->getChildren();
+                if (children && children->count() > 0) {
+                    objects = children;
+                    LOG_INFOF("Found {} objects in objectLayer", objects->count());
+                }
+            }
+        }
+        
+        // Method 3: Try iterating through all children recursively
+        if (!objects || objects->count() == 0) {
+            LOG_WARN("No objects found in standard locations, searching all children...");
+            objects = CCArray::create();
+            objects->retain();
+            
+            std::function<void(CCNode*)> findObjects = [&](CCNode* node) {
+                if (!node) return;
+                
+                if (auto gameObj = typeinfo_cast<GameObject*>(node)) {
+                    objects->addObject(gameObj);
+                }
+                
+                CCArray* children = node->getChildren();
+                if (children) {
+                    CCObject* child;
+                    CCARRAY_FOREACH(children, child) {
+                        findObjects(static_cast<CCNode*>(child));
+                    }
+                }
+            };
+            
+            findObjects(layer);
+            LOG_INFOF("Found {} GameObjects by recursive search", objects->count());
+        }
+        
+        if (!objects || objects->count() == 0) {
+            LOG_ERROR("Could not find any objects!");
+            return;
+        }
+        
         int count = objects->count();
         LOG_INFOF("Processing {} objects", count);
         
         double maxX = 0;
+        int processed = 0;
         
-        for (int i = 0; i < count; i++) {
-            auto* obj = static_cast<GameObject*>(objects->objectAtIndex(i));
-            if (!obj) continue;
+        CCObject* obj;
+        CCARRAY_FOREACH(objects, obj) {
+            auto* gameObj = typeinfo_cast<GameObject*>(obj);
+            if (!gameObj) continue;
             
-            int objID = obj->m_objectID;
-            auto pos = obj->getPosition();
-            auto size = obj->getContentSize();
-            double scaleX = std::abs(obj->getScaleX());
-            double scaleY = std::abs(obj->getScaleY());
+            processed++;
+            int objID = gameObj->m_objectID;
+            auto pos = gameObj->getPosition();
+            auto size = gameObj->getContentSize();
+            double scaleX = std::abs(gameObj->getScaleX());
+            double scaleY = std::abs(gameObj->getScaleY());
             
             SimObj simObj;
             simObj.id = objID;
             
-            simObj.flipX = obj->isFlipX();
-            simObj.flipY = obj->isFlipY();
-            simObj.rot = obj->getRotation();
+            simObj.flipX = gameObj->isFlipX();
+            simObj.flipY = gameObj->isFlipY();
+            simObj.rot = gameObj->getRotation();
             
             double w = size.width * scaleX;
             double h = size.height * scaleY;
+            
+            // Use object rect if available, otherwise calculate
+            if (w < 1) w = GDConst::BLOCK_SIZE;
+            if (h < 1) h = GDConst::BLOCK_SIZE;
+            
             simObj.hitbox = Rect(pos.x - w/2, pos.y - h/2, w, h);
             
             if (ObjIDs::isHazard(objID)) {
@@ -548,7 +611,9 @@ public:
         
         m_level.length = maxX + 100;
         m_level.sortByX();
+        m_loaded = true;
         
+        LOG_INFOF("Processed {} GameObjects", processed);
         LOG_INFOF("Level loaded: {} hazards, {} solids, {} orbs, {} pads, {} portals",
                   m_level.hazards.size(), m_level.solids.size(),
                   m_level.orbs.size(), m_level.pads.size(), m_level.portals.size());
@@ -879,6 +944,12 @@ private:
         Simulator& sim = Simulator::get();
         double levelLen = sim.getLevelLength();
         
+        if (levelLen <= 100) {
+            LOG_ERROR("Level not loaded properly!");
+            m_running = false;
+            return;
+        }
+        
         std::vector<PathState> beam;
         
         PathState init;
@@ -1045,16 +1116,20 @@ protected:
         m_mainLayer->addChild(m_statusLabel);
         
         auto progressBg = CCSprite::create("GJ_progressBar_001.png");
-        progressBg->setPosition(ccp(0, 0));
-        progressBg->setScaleX(0.8f);
-        m_mainLayer->addChild(progressBg);
+        if (progressBg) {
+            progressBg->setPosition(ccp(0, 0));
+            progressBg->setScaleX(0.8f);
+            m_mainLayer->addChild(progressBg);
+        }
         
         m_progressBar = CCSprite::create("GJ_progressBar_001.png");
-        m_progressBar->setColor(ccc3(0, 255, 0));
-        m_progressBar->setPosition(ccp(0, 0));
-        m_progressBar->setScaleX(0.0f);
-        m_progressBar->setScaleY(0.8f);
-        m_mainLayer->addChild(m_progressBar);
+        if (m_progressBar) {
+            m_progressBar->setColor(ccc3(0, 255, 0));
+            m_progressBar->setPosition(ccp(0, 0));
+            m_progressBar->setScaleX(0.0f);
+            m_progressBar->setScaleY(0.8f);
+            m_mainLayer->addChild(m_progressBar);
+        }
         
         auto startBtn = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Start", "goldFont.fnt", "GJ_button_01.png"),
@@ -1102,8 +1177,8 @@ protected:
             prog = 0;
         }
         
-        m_statusLabel->setString(status.c_str());
-        m_progressBar->setScaleX(0.8f * prog);
+        if (m_statusLabel) m_statusLabel->setString(status.c_str());
+        if (m_progressBar) m_progressBar->setScaleX(0.8f * prog);
     }
     
     void onStart(CCObject*) {
@@ -1121,8 +1196,14 @@ protected:
         } else if (!pf.isRunning()) {
             auto playLayer = PlayLayer::get();
             if (playLayer) {
-                Simulator::get().loadLevel(playLayer);
-                pf.start();
+                // Re-load level data when starting
+                Simulator::get().loadFromPlayLayer(playLayer);
+                
+                if (Simulator::get().isLoaded()) {
+                    pf.start();
+                } else {
+                    FLAlertLayer::create("Error", "Failed to load level data!", "OK")->show();
+                }
             } else {
                 FLAlertLayer::create("Error", "Enter a level first!", "OK")->show();
             }
@@ -1153,6 +1234,7 @@ public:
 class $modify(PFPlayLayer, PlayLayer) {
     struct Fields {
         bool m_inputActive = false;
+        bool m_levelLoaded = false;
     };
     
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
@@ -1161,9 +1243,19 @@ class $modify(PFPlayLayer, PlayLayer) {
         }
         
         LOG_INFO("PlayLayer initialized");
-        Simulator::get().loadLevel(this);
         
         return true;
+    }
+    
+    // Load objects after level is fully set up
+    void onEnterTransitionDidFinish() {
+        PlayLayer::onEnterTransitionDidFinish();
+        
+        if (!m_fields->m_levelLoaded) {
+            LOG_INFO("Level transition finished, loading objects...");
+            Simulator::get().loadFromPlayLayer(this);
+            m_fields->m_levelLoaded = true;
+        }
     }
     
     void update(float dt) {
@@ -1173,11 +1265,9 @@ class $modify(PFPlayLayer, PlayLayer) {
             bool inp = rp.getInput();
             
             if (inp && !m_fields->m_inputActive) {
-                // Press - use handleButton through the layer
                 this->handleButton(true, 1, true);
                 m_fields->m_inputActive = true;
             } else if (!inp && m_fields->m_inputActive) {
-                // Release
                 this->handleButton(false, 1, true);
                 m_fields->m_inputActive = false;
             }
@@ -1212,11 +1302,21 @@ class $modify(PFLevelInfoLayer, LevelInfoLayer) {
             return false;
         }
         
+        // Create button sprite
         auto spr = CCSprite::create("GJ_button_01.png");
-        spr->setScale(0.8f);
+        if (!spr) {
+            spr = CCSprite::create("GJ_button_02.png");
+        }
+        if (!spr) {
+            // Fallback: create a simple colored sprite
+            spr = CCSprite::create();
+            spr->setTextureRect(CCRectMake(0, 0, 40, 40));
+            spr->setColor(ccc3(100, 100, 255));
+        }
+        spr->setScale(0.9f);
         
         auto label = CCLabelBMFont::create("PF", "bigFont.fnt");
-        label->setScale(0.6f);
+        label->setScale(0.5f);
         label->setPosition(spr->getContentSize() / 2);
         spr->addChild(label);
         
@@ -1225,17 +1325,46 @@ class $modify(PFLevelInfoLayer, LevelInfoLayer) {
         );
         btn->setID("pathfinder-btn"_spr);
         
-        if (auto menu = this->getChildByID("left-side-menu")) {
-            btn->setPosition(ccp(0, -60));
-            static_cast<CCMenu*>(menu)->addChild(btn);
-        } else {
-            auto newMenu = CCMenu::create();
-            newMenu->addChild(btn);
-            newMenu->setPosition(ccp(50, 250));
-            this->addChild(newMenu, 100);
+        // Try to find an existing menu to add to
+        CCMenu* targetMenu = nullptr;
+        
+        // Try various menu IDs
+        const char* menuIds[] = {
+            "left-side-menu",
+            "play-menu", 
+            "other-menu",
+            "bottom-menu"
+        };
+        
+        for (const char* menuId : menuIds) {
+            if (auto menu = typeinfo_cast<CCMenu*>(this->getChildByID(menuId))) {
+                targetMenu = menu;
+                LOG_INFOF("Found menu: {}", menuId);
+                break;
+            }
         }
         
-        LOG_INFO("Pathfinder button added");
+        if (targetMenu) {
+            // Add relative to existing buttons
+            float yPos = -50.0f;
+            if (auto lastChild = targetMenu->getChildren()->lastObject()) {
+                auto lastNode = static_cast<CCNode*>(lastChild);
+                yPos = lastNode->getPositionY() - 50.0f;
+            }
+            btn->setPosition(ccp(0, yPos));
+            targetMenu->addChild(btn);
+            LOG_INFO("Button added to existing menu");
+        } else {
+            // Create our own menu in a visible location
+            auto newMenu = CCMenu::create();
+            newMenu->setPosition(ccp(30, 160));
+            btn->setPosition(ccp(0, 0));
+            newMenu->addChild(btn);
+            this->addChild(newMenu, 10);
+            LOG_INFO("Button added with new menu at fixed position");
+        }
+        
+        LOG_INFO("Pathfinder button setup complete");
         
         return true;
     }
