@@ -2,7 +2,6 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/LevelInfoLayer.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
-#include <Geode/modify/PlayerObject.hpp>
 #include <Geode/ui/GeodeUI.hpp>
 
 #include <queue>
@@ -1148,13 +1147,6 @@ public:
 };
 
 // ============================================================================
-// GLOBAL INPUT STATE FOR REPLAY
-// ============================================================================
-
-static bool g_replayInput = false;
-static bool g_replayActive = false;
-
-// ============================================================================
 // HOOKS
 // ============================================================================
 
@@ -1177,30 +1169,20 @@ class $modify(PFPlayLayer, PlayLayer) {
     void update(float dt) {
         Replay& rp = Replay::get();
         
-        if (rp.isPlaying()) {
+        if (rp.isPlaying() && m_player1) {
             bool inp = rp.getInput();
-            g_replayInput = inp;
-            g_replayActive = true;
             
-            // Direct player control using setters
-            if (m_player1) {
-                if (inp && !m_fields->m_inputActive) {
-                    m_player1->m_isHolding = true;
-                    m_player1->m_hasJustHeld = true;
-                    m_fields->m_inputActive = true;
-                } else if (!inp && m_fields->m_inputActive) {
-                    m_player1->m_isHolding = false;
-                    m_player1->m_hasJustHeld = false;
-                    m_fields->m_inputActive = false;
-                } else if (inp) {
-                    m_player1->m_isHolding = true;
-                    m_player1->m_hasJustHeld = false;
-                }
+            if (inp && !m_fields->m_inputActive) {
+                // Press - use handleButton through the layer
+                this->handleButton(true, 1, true);
+                m_fields->m_inputActive = true;
+            } else if (!inp && m_fields->m_inputActive) {
+                // Release
+                this->handleButton(false, 1, true);
+                m_fields->m_inputActive = false;
             }
             
             rp.advance();
-        } else {
-            g_replayActive = false;
         }
         
         PlayLayer::update(dt);
