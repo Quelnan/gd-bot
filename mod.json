@@ -2,89 +2,95 @@
   "geode": "4.10.0",
   "gd": { "win": "2.2074" },
   "id": "developer.gdbot",
-  "name": "GD AutoBot Trainer (Deterministic)",
+  "name": "GD AutoBot Backtracker",
   "version": "v1.0.0",
   "developer": "Developer",
-  "description": "Fast-forward trainer that evolves an input path using real engine collisions, then replays best at normal speed",
+  "description": "Deterministic fast-forward trainer that backtracks taps/holds instead of randomizing, then replays best path",
   "settings": {
     "enabled": { "name": "Enabled", "type": "bool", "default": false },
 
     "updates-per-frame": {
       "name": "Training Speed (updates per frame)",
-      "description": "How many real GD updates to execute per rendered frame (100 = ~100x if CPU can keep up). Deterministic.",
+      "description": "Deterministic fast-forward: how many real GD updates to execute per rendered frame",
       "type": "int",
-      "default": 30,
+      "default": 60,
       "min": 1,
-      "max": 300
+      "max": 2000
     },
-    "inner-time-budget-ms": {
-      "name": "Inner Time Budget (ms)",
-      "description": "Limits CPU time per rendered frame so the game doesn’t freeze.",
+    "inner-budget-ms": {
+      "name": "Inner Budget (ms)",
+      "description": "CPU time limit per rendered frame (prevents freezing)",
       "type": "int",
       "default": 8,
       "min": 1,
-      "max": 30
+      "max": 40
     },
 
     "max-frames": {
       "name": "Max Frames Per Attempt",
-      "description": "Failsafe; restarts if attempt runs too long.",
+      "description": "Failsafe: restart if attempt runs too long",
       "type": "int",
       "default": 300000,
-      "min": 10000,
-      "max": 1000000
+      "min": 20000,
+      "max": 1500000
     },
 
-    "mutation-window": {
-      "name": "Mutation Window (frames)",
-      "description": "Mutate around the last death frame ± window.",
-      "type": "int",
-      "default": 240,
-      "min": 30,
-      "max": 5000
-    },
-    "prefix-lock-margin": {
-      "name": "Prefix Lock Margin (frames)",
-      "description": "How many frames BEFORE best death remain mutable. Higher = less stable, lower = more stable.",
-      "type": "int",
-      "default": 30,
-      "min": 0,
-      "max": 2000
-    },
-
-    "mutation-ops": {
-      "name": "Mutation Ops Per Attempt",
-      "description": "How many tap insert/remove edits to apply each new attempt.",
-      "type": "int",
-      "default": 40,
-      "min": 1,
-      "max": 500
-    },
     "tap-length": {
       "name": "Tap Length (frames)",
-      "description": "How long an inserted tap holds.",
+      "description": "Default click length for newly created taps",
       "type": "int",
       "default": 2,
       "min": 1,
       "max": 20
     },
 
-    "seed-tap-rate": {
-      "name": "Seed Tap Density",
-      "description": "How often taps appear in the first attempt (lower = fewer taps).",
-      "type": "float",
-      "default": 0.002,
-      "min": 0.0001,
-      "max": 0.05
+    "max-shift": {
+      "name": "Max Shift (frames)",
+      "description": "How far earlier/later the bot will shift a tap/hold while searching",
+      "type": "int",
+      "default": 30,
+      "min": 1,
+      "max": 600
+    },
+
+    "insert-offset": {
+      "name": "Insert Offset (frames)",
+      "description": "If there is no tap near death, insert one at (deathFrame - offset)",
+      "type": "int",
+      "default": 10,
+      "min": 1,
+      "max": 300
+    },
+
+    "mutation-window": {
+      "name": "Backtrack Window (frames)",
+      "description": "Only segments starting within [death-window, death] are considered for the \"last decision\"",
+      "type": "int",
+      "default": 600,
+      "min": 60,
+      "max": 6000
+    },
+
+    "prefix-lock": {
+      "name": "Prefix Lock (frames)",
+      "description": "Never change segments starting earlier than (bestDeathFrame - window - prefixLock)",
+      "type": "int",
+      "default": 60,
+      "min": 0,
+      "max": 6000
     },
 
     "verify-after-win": {
       "name": "Verify After Win",
-      "description": "After a win, replay best at normal speed to confirm.",
+      "description": "After first completion, replay best at normal speed to confirm",
       "type": "bool",
       "default": true
     },
 
-    "log-status": { "name": "Log Status", "type": "bool", "default": true }
+    "log-status": {
+      "name": "Log Status",
+      "type": "bool",
+      "default": true
+    }
   }
 }
