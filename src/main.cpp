@@ -6,7 +6,7 @@
 #include <Geode/ui/GeodeUI.hpp>
 
 #include <vector>
-#include <random>
+#include <deque>
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -20,18 +20,17 @@ using namespace geode::prelude;
 struct Settings {
     bool enabled = false;
 
-    int updatesPerFrame = 30;     // fast-forward factor
-    int innerBudgetMs = 8;        // time budget per rendered frame
+    int updatesPerFrame = 60;
+    int innerBudgetMs = 8;
 
     int maxFrames = 300000;
 
-    int mutationWindow = 240;
-    int prefixLockMargin = 30;
+    int tapLen = 2;
+    int maxShift = 30;
+    int insertOffset = 10;
 
-    int mutationOps = 40;
-    int tapLength = 2;
-
-    float seedTapRate = 0.002f;
+    int window = 600;
+    int prefixLock = 60;
 
     bool verifyAfterWin = true;
     bool logStatus = true;
@@ -41,40 +40,38 @@ struct Settings {
         enabled = m->getSettingValue<bool>("enabled");
 
         updatesPerFrame = (int)m->getSettingValue<int64_t>("updates-per-frame");
-        innerBudgetMs = (int)m->getSettingValue<int64_t>("inner-time-budget-ms");
+        innerBudgetMs = (int)m->getSettingValue<int64_t>("inner-budget-ms");
 
         maxFrames = (int)m->getSettingValue<int64_t>("max-frames");
 
-        mutationWindow = (int)m->getSettingValue<int64_t>("mutation-window");
-        prefixLockMargin = (int)m->getSettingValue<int64_t>("prefix-lock-margin");
+        tapLen = (int)m->getSettingValue<int64_t>("tap-length");
+        maxShift = (int)m->getSettingValue<int64_t>("max-shift");
+        insertOffset = (int)m->getSettingValue<int64_t>("insert-offset");
 
-        mutationOps = (int)m->getSettingValue<int64_t>("mutation-ops");
-        tapLength = (int)m->getSettingValue<int64_t>("tap-length");
-
-        seedTapRate = (float)m->getSettingValue<double>("seed-tap-rate");
+        window = (int)m->getSettingValue<int64_t>("mutation-window");
+        prefixLock = (int)m->getSettingValue<int64_t>("prefix-lock");
 
         verifyAfterWin = m->getSettingValue<bool>("verify-after-win");
         logStatus = m->getSettingValue<bool>("log-status");
 
-        updatesPerFrame = std::clamp(updatesPerFrame, 1, 300);
-        innerBudgetMs = std::clamp(innerBudgetMs, 1, 30);
+        updatesPerFrame = std::clamp(updatesPerFrame, 1, 2000);
+        innerBudgetMs = std::clamp(innerBudgetMs, 1, 40);
 
-        maxFrames = std::clamp(maxFrames, 10000, 1000000);
+        maxFrames = std::clamp(maxFrames, 20000, 1500000);
 
-        mutationWindow = std::clamp(mutationWindow, 30, 5000);
-        prefixLockMargin = std::clamp(prefixLockMargin, 0, 2000);
+        tapLen = std::clamp(tapLen, 1, 20);
+        maxShift = std::clamp(maxShift, 1, 600);
+        insertOffset = std::clamp(insertOffset, 1, 300);
 
-        mutationOps = std::clamp(mutationOps, 1, 500);
-        tapLength = std::clamp(tapLength, 1, 20);
-
-        seedTapRate = std::clamp(seedTapRate, 0.0001f, 0.05f);
+        window = std::clamp(window, 60, 6000);
+        prefixLock = std::clamp(prefixLock, 0, 6000);
     }
 };
 
 static Settings g_set;
 
 // ============================================================
-// Deterministic fast-forward trainer state
+// Run state
 // ============================================================
 
 enum class RunMode {
@@ -83,159 +80,289 @@ enum class RunMode {
     Verify
 };
 
-static RunMode g_runMode = RunMode::Idle;
+static RunMode g_mode = RunMode::Idle;
 
 static bool g_isHolding = false;
 static bool g_prevDead = false;
 
-static int  g_frameInAttempt = 0;
-static int  g_generation = 0;
-
+static int g_frame = 0;
+static int g_bestDeathFrame = 0;
 static float g_bestX = 0.f;
-static int   g_bestDeathFrame = 0;
-static bool  g_hasWin = false;
+static bool g_hasWin = false;
 
-// request reset safely (don’t reset mid-inner-loop)
 static bool g_requestReset = false;
 
-// for status logging
 static int g_logCounter = 0;
 
-// RNG
-static std::mt19937 g_rng{ std::random_device{}() };
-
 // ============================================================
-// Genome: hold state per frame (0/1)
+// Input representation: HOLD segments
+// Default state = RELEASE. Any segment makes hold=true for [start, end).
+// This supports both "tap" (short) and "hold" (long).
 // ============================================================
 
-struct Genome {
-    std::vector<uint8_t> hold;
-    float fitnessX = 0.f;
-    int deathFrame = 0;
-    bool completed = false;
+struct Segment {
+    int start = 0;
+    int end = 0; // exclusive
 };
 
-static Genome g_best;
-static Genome g_cur;
-
-// ============================================================
-// Helpers
-// ============================================================
-
-static void applyHold(GJBaseGameLayer* gl, bool hold) {
-    if (!gl) return;
-    if (hold == g_isHolding) return;
-    gl->handleButton(hold, 1, true);
-    g_isHolding = hold;
-}
-
-static void ensureSize(Genome& g, int n) {
-    if ((int)g.hold.size() < n) g.hold.resize((size_t)n, 0);
-    if ((int)g.hold.size() > n) g.hold.resize((size_t)n);
-}
-
-static bool holdAt(const Genome& g, int f) {
-    if (f < 0) return false;
-    if ((size_t)f >= g.hold.size()) return false;
-    return g.hold[(size_t)f] != 0;
-}
-
-static void seedGenome(Genome& g) {
-    g.hold.assign((size_t)g_set.maxFrames, 0);
-
-    std::uniform_real_distribution<float> u01(0.f, 1.f);
-
-    for (int i = 0; i < g_set.maxFrames; i++) {
-        if (u01(g_rng) < g_set.seedTapRate) {
-            for (int k = 0; k < g_set.tapLength && (i + k) < g_set.maxFrames; k++) {
-                g.hold[(size_t)(i + k)] = 1;
-            }
-            i += g_set.tapLength;
-        }
+static void normalizeSegments(std::vector<Segment>& segs, int maxFrames) {
+    // clamp and remove invalid
+    for (auto& s : segs) {
+        s.start = std::clamp(s.start, 0, maxFrames);
+        s.end = std::clamp(s.end, 0, maxFrames);
+        if (s.end < s.start) std::swap(s.start, s.end);
     }
-}
+    segs.erase(std::remove_if(segs.begin(), segs.end(), [](const Segment& s) {
+        return s.end <= s.start;
+    }), segs.end());
 
-static void copyBestToCur() {
-    g_cur = g_best;
-    ensureSize(g_cur, g_set.maxFrames);
-}
+    std::sort(segs.begin(), segs.end(), [](const Segment& a, const Segment& b) {
+        return a.start < b.start;
+    });
 
-static void mutateFromBest(Genome& out) {
-    out = g_best;
-    ensureSize(out, g_set.maxFrames);
-
-    int center = (g_bestDeathFrame > 0) ? g_bestDeathFrame : (g_set.maxFrames / 4);
-    int start = std::max(0, center - g_set.mutationWindow);
-    int end   = std::min(g_set.maxFrames - 1, center + g_set.mutationWindow);
-
-    // PREFIX LOCK: do not change anything before lockedPrefixEnd
-    int lockedPrefixEnd = std::max(0, (g_bestDeathFrame - g_set.mutationWindow) - g_set.prefixLockMargin);
-    start = std::max(start, lockedPrefixEnd);
-
-    if (start >= end) {
-        // nothing to mutate safely, fallback small window at end
-        start = std::max(0, center - 30);
-        end = std::min(g_set.maxFrames - 1, center + 30);
-        start = std::max(start, lockedPrefixEnd);
-    }
-
-    std::uniform_int_distribution<int> pick(start, end);
-    std::uniform_int_distribution<int> opPick(0, 1);
-
-    for (int op = 0; op < g_set.mutationOps; op++) {
-        int f = pick(g_rng);
-        int which = opPick(g_rng);
-
-        if (which == 0) {
-            // insert tap
-            for (int k = 0; k < g_set.tapLength && f + k < g_set.maxFrames; k++) {
-                out.hold[(size_t)(f + k)] = 1;
-            }
+    // merge overlaps
+    std::vector<Segment> merged;
+    merged.reserve(segs.size());
+    for (auto const& s : segs) {
+        if (merged.empty() || s.start > merged.back().end) {
+            merged.push_back(s);
         } else {
-            // remove tap
-            for (int k = 0; k < g_set.tapLength && f + k < g_set.maxFrames; k++) {
-                out.hold[(size_t)(f + k)] = 0;
-            }
+            merged.back().end = std::max(merged.back().end, s.end);
         }
     }
+    segs.swap(merged);
 }
 
-static void startTraining() {
-    g_runMode = RunMode::Training;
-    g_generation = 0;
+static bool holdAtFrame(const std::vector<Segment>& segs, int frame, size_t& segIdx) {
+    // advance segIdx while frame >= end
+    while (segIdx < segs.size() && frame >= segs[segIdx].end) segIdx++;
+    if (segIdx >= segs.size()) return false;
+    return frame >= segs[segIdx].start && frame < segs[segIdx].end;
+}
 
-    g_best = Genome{};
-    g_cur = Genome{};
+// ============================================================
+// “Analyzed attempts”: record mode per frame for best attempt (optional)
+// For now we only store it; you can later use it to restrict holds to ship/wave.
+// ============================================================
+
+static std::vector<uint8_t> g_attemptModeTL;
+static std::vector<uint8_t> g_bestModeTL;
+
+// mode encoding 0..7
+static uint8_t readMode(PlayerObject* p) {
+    if (!p) return 0;
+    if (p->m_isShip) return 1;
+    if (p->m_isBall) return 2;
+    if (p->m_isBird) return 3;
+    if (p->m_isDart) return 4;
+    if (p->m_isRobot) return 5;
+    if (p->m_isSpider) return 6;
+    if (p->m_isSwing) return 7;
+    return 0;
+}
+
+// ============================================================
+// Candidate generator: backtracking systematic edits
+// ============================================================
+
+struct SearchCursor {
+    int backtrackDepth = 0;   // 0 = last segment near death, 1 = previous, etc
+    int durIndex = 0;
+    int shiftIndex = 0;
+    bool tryDelete = false;
+    bool inserting = false;
+
+    void reset() {
+        backtrackDepth = 0;
+        durIndex = 0;
+        shiftIndex = 0;
+        tryDelete = false;
+        inserting = false;
+    }
+};
+
+static SearchCursor g_cursor;
+
+static std::vector<int> makeShiftList(int maxShift) {
+    std::vector<int> shifts;
+    shifts.reserve((size_t)(maxShift * 2 + 1));
+    shifts.push_back(0);
+    for (int d = 1; d <= maxShift; d++) {
+        shifts.push_back(-d);
+        shifts.push_back(d);
+    }
+    return shifts;
+}
+
+static std::vector<int> makeDurationList(int tapLen) {
+    // tap first, then progressively longer holds
+    // (still deterministic, “hold when needed”)
+    return { tapLen, tapLen * 2, tapLen * 4, tapLen * 8, tapLen * 16 };
+}
+
+// Find candidate segment index to modify (last segment starting before bestDeathFrame within window),
+// then apply backtrackDepth.
+static int pickSegmentToModify(const std::vector<Segment>& bestSegs, int bestDeathFrame, int lockFrame, int window, int backtrackDepth) {
+    if (bestSegs.empty()) return -1;
+
+    int startMin = std::max(lockFrame, bestDeathFrame - window);
+    int startMax = bestDeathFrame;
+
+    // gather eligible indices
+    std::vector<int> eligible;
+    for (int i = 0; i < (int)bestSegs.size(); i++) {
+        int st = bestSegs[i].start;
+        if (st >= startMin && st < startMax) eligible.push_back(i);
+    }
+    if (eligible.empty()) return -1;
+
+    int idx = (int)eligible.size() - 1 - backtrackDepth;
+    if (idx < 0) return -1;
+    return eligible[idx];
+}
+
+// Produce next candidate segments deterministically.
+// Returns false if no more candidates (should widen parameters or restart search).
+static bool nextCandidate(std::vector<Segment>& outSegs, const std::vector<Segment>& bestSegs, int bestDeathFrame) {
+    int lockFrame = std::max(0, (bestDeathFrame - g_set.window) - g_set.prefixLock);
+
+    auto shifts = makeShiftList(g_set.maxShift);
+    auto durs   = makeDurationList(g_set.tapLen);
+
+    // which segment to modify?
+    int segIndex = pickSegmentToModify(bestSegs, bestDeathFrame, lockFrame, g_set.window, g_cursor.backtrackDepth);
+
+    // If none, insert a new tap near death (deterministic)
+    if (segIndex < 0) {
+        g_cursor.inserting = true;
+
+        if (g_cursor.durIndex >= (int)durs.size()) {
+            g_cursor.durIndex = 0;
+            g_cursor.shiftIndex++;
+        }
+        if (g_cursor.shiftIndex >= (int)shifts.size()) {
+            // exhausted insertion variants; backtrackDepth increases (but none exist)
+            g_cursor.shiftIndex = 0;
+            g_cursor.durIndex = 0;
+            return false;
+        }
+
+        int baseStart = std::max(0, bestDeathFrame - g_set.insertOffset);
+        int start = baseStart + shifts[g_cursor.shiftIndex];
+        int dur = durs[g_cursor.durIndex];
+        g_cursor.durIndex++;
+
+        Segment inserted{ start, start + dur };
+
+        outSegs = bestSegs;
+        outSegs.push_back(inserted);
+        normalizeSegments(outSegs, g_set.maxFrames);
+        return true;
+    }
+
+    // Modify an existing segment
+    g_cursor.inserting = false;
+
+    // Delete after exhausting (shift,dur) combos
+    if (g_cursor.tryDelete) {
+        outSegs = bestSegs;
+        outSegs.erase(outSegs.begin() + segIndex);
+        normalizeSegments(outSegs, g_set.maxFrames);
+
+        // advance cursor to next backtrack target
+        g_cursor.tryDelete = false;
+        g_cursor.shiftIndex = 0;
+        g_cursor.durIndex = 0;
+        g_cursor.backtrackDepth++;
+
+        return true;
+    }
+
+    // enumerate shift/duration combos
+    if (g_cursor.durIndex >= (int)durs.size()) {
+        g_cursor.durIndex = 0;
+        g_cursor.shiftIndex++;
+    }
+    if (g_cursor.shiftIndex >= (int)shifts.size()) {
+        // finished all variants -> next, try delete
+        g_cursor.shiftIndex = 0;
+        g_cursor.durIndex = 0;
+        g_cursor.tryDelete = true;
+        return nextCandidate(outSegs, bestSegs, bestDeathFrame);
+    }
+
+    int shift = shifts[g_cursor.shiftIndex];
+    int dur = durs[g_cursor.durIndex];
+    g_cursor.durIndex++;
+
+    outSegs = bestSegs;
+
+    Segment s = outSegs[segIndex];
+    int len = std::max(1, dur);
+    int newStart = s.start + shift;
+    int newEnd = newStart + len;
+
+    // enforce lock
+    if (newStart < lockFrame) newStart = lockFrame;
+    newEnd = newStart + len;
+
+    outSegs[segIndex] = { newStart, newEnd };
+    normalizeSegments(outSegs, g_set.maxFrames);
+    return true;
+}
+
+// ============================================================
+// Best + current plan
+// ============================================================
+
+static std::vector<Segment> g_bestSegs;
+static std::vector<Segment> g_curSegs;
+
+// segment scanning state
+static size_t g_segIdx = 0;
+
+// ============================================================
+// Attempt lifecycle
+// ============================================================
+
+static void beginTraining() {
+    g_mode = RunMode::Training;
+    g_bestSegs.clear();
+    g_bestModeTL.clear();
+
     g_bestX = 0.f;
     g_bestDeathFrame = 0;
     g_hasWin = false;
 
-    seedGenome(g_cur);
+    g_curSegs.clear();
+    g_cursor.reset();
 }
 
-static void startVerify() {
-    g_runMode = RunMode::Verify;
-    copyBestToCur();
+static void beginVerify() {
+    g_mode = RunMode::Verify;
+    g_curSegs = g_bestSegs;
+    normalizeSegments(g_curSegs, g_set.maxFrames);
 }
 
-// Called when an attempt ends (death or completion)
+// Called at end of an attempt
 static void finishAttempt(float xReached, int deathFrame, bool completed) {
-    g_cur.fitnessX = xReached;
-    g_cur.deathFrame = deathFrame;
-    g_cur.completed = completed;
-
     if (completed) {
-        g_best = g_cur;
         g_bestX = xReached;
         g_bestDeathFrame = deathFrame;
+        g_bestSegs = g_curSegs;
+        g_bestModeTL = g_attemptModeTL;
         g_hasWin = true;
         return;
     }
 
     if (xReached > g_bestX) {
-        g_best = g_cur;
         g_bestX = xReached;
         g_bestDeathFrame = deathFrame;
+        g_bestSegs = g_curSegs;
+        g_bestModeTL = g_attemptModeTL;
+
+        // reset backtracking when best improves
+        g_cursor.reset();
     }
 }
 
@@ -245,17 +372,20 @@ static void finishAttempt(float xReached, int deathFrame, bool completed) {
 
 class $modify(BotPlayLayer, PlayLayer) {
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
-        bool ok = PlayLayer::init(level, useReplay, dontCreateObjects);
-        if (!ok) return false;
+        if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
 
         g_set.load();
-        g_runMode = RunMode::Idle;
+        g_mode = RunMode::Idle;
 
-        g_prevDead = false;
         g_isHolding = false;
-        g_frameInAttempt = 0;
+        g_prevDead = false;
         g_requestReset = false;
-        g_logCounter = 0;
+
+        g_frame = 0;
+        g_segIdx = 0;
+
+        g_attemptModeTL.clear();
+        g_attemptModeTL.shrink_to_fit(); // keep memory reasonable
 
         return true;
     }
@@ -263,46 +393,64 @@ class $modify(BotPlayLayer, PlayLayer) {
     void resetLevel() {
         PlayLayer::resetLevel();
 
-        // clear hold safely
+        // release button
         if (auto* gj = GJBaseGameLayer::get()) {
             gj->handleButton(false, 1, true);
         }
         g_isHolding = false;
+
         g_prevDead = false;
-        g_frameInAttempt = 0;
         g_requestReset = false;
+        g_frame = 0;
+        g_segIdx = 0;
+
+        g_attemptModeTL.clear();
+        g_attemptModeTL.reserve(20000);
 
         g_set.load();
 
-        // Prepare next attempt genome:
-        if (g_runMode == RunMode::Training) {
-            if (g_best.hold.empty()) {
-                seedGenome(g_cur);
+        if (g_mode == RunMode::Training) {
+            // Build next candidate based on best
+            if (g_bestDeathFrame <= 0) {
+                // If no best yet, we’ll learn it from the first death
+                g_curSegs.clear();
             } else {
-                mutateFromBest(g_cur);
+                std::vector<Segment> cand;
+                bool ok = nextCandidate(cand, g_bestSegs, g_bestDeathFrame);
+                if (!ok) {
+                    // If exhausted, widen by backtracking more
+                    g_cursor.reset();
+                    g_cursor.backtrackDepth++;
+                    // last resort: insert near death
+                    nextCandidate(cand, g_bestSegs, g_bestDeathFrame);
+                }
+                g_curSegs = cand;
             }
-            g_generation++;
-        } else if (g_runMode == RunMode::Verify) {
-            copyBestToCur();
+            normalizeSegments(g_curSegs, g_set.maxFrames);
+        } else if (g_mode == RunMode::Verify) {
+            g_curSegs = g_bestSegs;
+            normalizeSegments(g_curSegs, g_set.maxFrames);
         }
     }
 
     void onQuit() {
-        // stop controlling input on quit
+        // release input on quit
         if (auto* gj = GJBaseGameLayer::get()) {
             gj->handleButton(false, 1, true);
         }
         g_isHolding = false;
-        g_runMode = RunMode::Idle;
+        g_mode = RunMode::Idle;
         PlayLayer::onQuit();
     }
 };
 
 class $modify(BotGameLayer, GJBaseGameLayer) {
     void update(float dt) {
-        // If bot is disabled, run normal behavior
         g_set.load();
-        if (!g_set.enabled || !PlayLayer::get()) {
+
+        // If disabled: normal update only
+        if (!g_set.enabled) {
+            if (g_isHolding) applyHold(this, false);
             GJBaseGameLayer::update(dt);
             return;
         }
@@ -313,48 +461,43 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
             return;
         }
 
-        // If paused, run normal update once and do nothing
         if (pl->m_isPaused) {
             GJBaseGameLayer::update(dt);
             return;
         }
 
-        // Start training when entering a level
-        if (g_runMode == RunMode::Idle) {
-            startTraining();
-            // start first attempt fresh
-            g_requestReset = true;
+        // start training when entering gameplay
+        if (g_mode == RunMode::Idle) {
+            beginTraining();
+            g_requestReset = true; // restart cleanly with candidate logic
         }
 
-        // Fast-forward loop (deterministic): call ORIGINAL update multiple times with same dt
+        // fast-forward deterministically: multiple ORIGINAL updates per render frame
+        int targetSteps = (g_mode == RunMode::Training) ? g_set.updatesPerFrame : 1;
+
         auto t0 = std::chrono::high_resolution_clock::now();
 
-        int stepsThisFrame = (g_runMode == RunMode::Training) ? g_set.updatesPerFrame : 1;
-
-        for (int s = 0; s < stepsThisFrame; s++) {
-            // If we requested a reset, do it safely outside this loop
+        for (int step = 0; step < targetSteps; step++) {
             if (g_requestReset) break;
-
-            // stop if completed
             if (pl->m_hasCompletedLevel) break;
-
-            // stop if dead (wait for reset)
             if (m_player1->m_isDead) break;
 
-            // Apply genome input for this internal frame
-            bool desiredHold = holdAt(g_cur, g_frameInAttempt);
+            // apply input for this internal frame
+            bool desiredHold = holdAtFrame(g_curSegs, g_frame, g_segIdx);
             applyHold(this, desiredHold);
 
-            // Run one real engine tick
+            // record current mode for “analyzed attempts”
+            g_attemptModeTL.push_back(readMode(m_player1));
+
+            // execute real engine tick (real hitboxes)
             GJBaseGameLayer::update(dt);
 
-            g_frameInAttempt++;
+            g_frame++;
 
-            // failsafe max frames
-            if (g_frameInAttempt >= g_set.maxFrames) {
-                // treat as failure
-                float x = m_player1 ? m_player1->getPositionX() : 0.f;
-                finishAttempt(x, g_frameInAttempt, false);
+            // failsafe
+            if (g_frame >= g_set.maxFrames) {
+                float x = m_player1->getPositionX();
+                finishAttempt(x, g_frame, false);
                 applyHold(this, false);
                 g_requestReset = true;
                 break;
@@ -366,43 +509,42 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
             if (ms >= g_set.innerBudgetMs) break;
         }
 
-        // Handle completion / death / reset requests
+        // detect death edge
         bool deadNow = m_player1->m_isDead;
-        bool completedNow = pl->m_hasCompletedLevel;
-
-        float curX = m_player1 ? m_player1->getPositionX() : 0.f;
+        bool completeNow = pl->m_hasCompletedLevel;
+        float xNow = m_player1->getPositionX();
 
         if (!g_prevDead && deadNow) {
-            finishAttempt(curX, g_frameInAttempt, false);
+            finishAttempt(xNow, g_frame, false);
             applyHold(this, false);
             g_requestReset = true;
         }
         g_prevDead = deadNow;
 
-        if (completedNow) {
-            finishAttempt(curX, g_frameInAttempt, true);
+        if (completeNow) {
+            finishAttempt(xNow, g_frame, true);
             applyHold(this, false);
 
-            if (g_runMode == RunMode::Training && g_set.verifyAfterWin) {
-                // switch to verify and replay best at normal speed
-                startVerify();
+            if (g_mode == RunMode::Training && g_set.verifyAfterWin) {
+                beginVerify();
                 g_requestReset = true;
             } else {
-                // stop controlling after success
+                // stop after win if no verify
                 Mod::get()->setSettingValue("enabled", false);
             }
         }
 
-        // status logs
+        // status log
         if (g_set.logStatus) {
             g_logCounter++;
             if (g_logCounter % 240 == 0) {
-                log::info("Mode={} gen={} frame={} x={:.1f} bestX={:.1f} bestDeathFrame={}",
-                    (int)g_runMode, g_generation, g_frameInAttempt, curX, g_bestX, g_bestDeathFrame);
+                log::info("Mode={} frame={} x={:.1f} bestX={:.1f} bestDeathFrame={} segsBest={} segsCur={}",
+                    (int)g_mode, g_frame, xNow, g_bestX, g_bestDeathFrame,
+                    g_bestSegs.size(), g_curSegs.size());
             }
         }
 
-        // Perform reset safely once per outer frame
+        // reset safely once per render frame
         if (g_requestReset) {
             g_requestReset = false;
             pl->resetLevel();
@@ -410,12 +552,12 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
     }
 };
 
-// Pause menu: toggle + settings button
+// Pause menu: toggle + settings
 class $modify(BotPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
-
         auto ws = CCDirector::sharedDirector()->getWinSize();
+
         auto* menu = CCMenu::create();
         menu->setPosition(ccp(0, 0));
         addChild(menu, 200);
@@ -444,7 +586,7 @@ class $modify(BotPauseLayer, PauseLayer) {
     }
 };
 
-// F8 toggles enabled
+// F8 toggle
 class $modify(CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat) {
         if (down && !repeat && key == KEY_F8) {
@@ -458,5 +600,5 @@ class $modify(CCKeyboardDispatcher) {
 
 $on_mod(Loaded) {
     g_set.load();
-    log::info("GD AutoBot Trainer (Deterministic) loaded. F8 toggles enabled.");
+    log::info("GD AutoBot Backtracker loaded. F8 toggles enabled. Use pause gear for settings.");
 }
