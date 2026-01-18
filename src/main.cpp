@@ -51,6 +51,9 @@ static bool  g_isHolding = false;
 static int   g_frameInAttempt = 0;
 static int   g_resetCountdown = -1;
 
+static bool g_prevDead = false;
+static int  g_frameCounter = 0;
+
 static float g_bestX = 0.f;
 static int   g_bestDeathFrame = 0;
 static bool  g_foundCompletion = false;
@@ -475,3 +478,4 @@ class $modify(CCKeyboardDispatcher) {
 $on_mod(Loaded) {
     log::info("GD AutoBot Trainer loaded. F8 toggles enabled.");
 }
+
