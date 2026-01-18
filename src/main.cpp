@@ -82,11 +82,11 @@ public:
     }
     
     template<typename... Args>
-    void logFmt(const std::string& level, const std::string& fmt, Args&&... args) {
+    void logFmt(const std::string& level, const std::string& fmtStr, Args&&... args) {
         try {
-            log(level, fmt::format(fmt::runtime(fmt), std::forward<Args>(args)...));
+            log(level, fmt::format(fmt::runtime(fmtStr), std::forward<Args>(args)...));
         } catch (...) {
-            log(level, fmt);
+            log(level, fmtStr);
         }
     }
     
@@ -104,10 +104,10 @@ public:
 #define LOG_DEBUG(msg) PathfinderLogger::get().log("DEBUG", msg)
 #define LOG_WARN(msg) PathfinderLogger::get().log("WARN", msg)
 #define LOG_ERROR(msg) PathfinderLogger::get().log("ERROR", msg)
-#define LOG_INFOF(fmt, ...) PathfinderLogger::get().logFmt("INFO", fmt, __VA_ARGS__)
-#define LOG_DEBUGF(fmt, ...) PathfinderLogger::get().logFmt("DEBUG", fmt, __VA_ARGS__)
-#define LOG_WARNF(fmt, ...) PathfinderLogger::get().logFmt("WARN", fmt, __VA_ARGS__)
-#define LOG_ERRORF(fmt, ...) PathfinderLogger::get().logFmt("ERROR", fmt, __VA_ARGS__)
+#define LOG_INFOF(fmtStr, ...) PathfinderLogger::get().logFmt("INFO", fmtStr, __VA_ARGS__)
+#define LOG_DEBUGF(fmtStr, ...) PathfinderLogger::get().logFmt("DEBUG", fmtStr, __VA_ARGS__)
+#define LOG_WARNF(fmtStr, ...) PathfinderLogger::get().logFmt("WARN", fmtStr, __VA_ARGS__)
+#define LOG_ERRORF(fmtStr, ...) PathfinderLogger::get().logFmt("ERROR", fmtStr, __VA_ARGS__)
 
 // ============================================================================
 // PHYSICS CONSTANTS
@@ -240,7 +240,7 @@ struct SimObj {
     bool flipX = false;
     bool flipY = false;
     double rot = 0;
-    int subType = 0; // For orbs/pads/portals
+    int subType = 0;
     bool active = true;
 };
 
@@ -338,10 +338,8 @@ namespace ObjIDs {
     }
     
     inline bool isSolid(int id) {
-        // Basic solids
         if (id >= 1 && id <= 7) return true;
         if (id >= 40 && id <= 50) return true;
-        // Slopes
         if (id >= 289 && id <= 308) return true;
         return false;
     }
@@ -351,7 +349,6 @@ namespace ObjIDs {
     }
     
     inline int getOrbType(int id) {
-        // 0=yellow, 1=blue, 2=pink, 3=red, 4=green, 5=black, 6=dash
         if (id == 36) return 0;
         if (id == 141) return 1;
         if (id == 1022) return 2;
@@ -362,34 +359,30 @@ namespace ObjIDs {
     }
     
     inline int getPadType(int id) {
-        if (id == 35) return 0;  // yellow
-        if (id == 140) return 1; // blue
-        if (id == 1332) return 2; // pink
+        if (id == 35) return 0;
+        if (id == 140) return 1;
+        if (id == 1332) return 2;
         return -1;
     }
     
     inline int getPortalType(int id) {
-        // Gamemodes
-        if (id == 12) return 0;  // cube
-        if (id == 13) return 1;  // ship
-        if (id == 47) return 2;  // ball
-        if (id == 111) return 3; // ufo
-        if (id == 660) return 4; // wave
-        if (id == 745) return 5; // robot
-        if (id == 1331) return 6; // spider
-        if (id == 1933) return 7; // swing
-        // Gravity
-        if (id == 10) return 10; // flip
-        if (id == 11) return 11; // normal
-        // Size
-        if (id == 99) return 20;  // mini
-        if (id == 101) return 21; // normal
-        // Speed
-        if (id == 200) return 30; // slow
-        if (id == 201) return 31; // normal
-        if (id == 202) return 32; // fast
-        if (id == 203) return 33; // faster
-        if (id == 1334) return 34; // fastest
+        if (id == 12) return 0;
+        if (id == 13) return 1;
+        if (id == 47) return 2;
+        if (id == 111) return 3;
+        if (id == 660) return 4;
+        if (id == 745) return 5;
+        if (id == 1331) return 6;
+        if (id == 1933) return 7;
+        if (id == 10) return 10;
+        if (id == 11) return 11;
+        if (id == 99) return 20;
+        if (id == 101) return 21;
+        if (id == 200) return 30;
+        if (id == 201) return 31;
+        if (id == 202) return 32;
+        if (id == 203) return 33;
+        if (id == 1334) return 34;
         return -1;
     }
 }
@@ -494,8 +487,10 @@ public:
             
             SimObj simObj;
             simObj.id = objID;
-            simObj.flipX = obj->m_isFlippedX;
-            simObj.flipY = obj->m_isFlippedY;
+            
+            // Use CCNode methods for flip detection (Geode 4.x compatible)
+            simObj.flipX = obj->isFlipX();
+            simObj.flipY = obj->isFlipY();
             simObj.rot = obj->getRotation();
             
             double w = size.width * scaleX;
@@ -506,7 +501,6 @@ public:
             if (ObjIDs::isHazard(objID)) {
                 simObj.type = ObjType::Hazard;
                 
-                // Spike triangle hitbox
                 if (ObjIDs::isSpike(objID)) {
                     double sw = GDConst::BLOCK_SIZE * 0.8;
                     double sh = GDConst::BLOCK_SIZE * 0.8;
@@ -591,7 +585,6 @@ public:
         double gravity = getGravity(s.mode, s.mini);
         int gravDir = s.gravFlip ? 1 : -1;
         
-        // Physics by gamemode
         switch (s.mode) {
             case GameMode::Cube:
                 s.velY += gravity * gravDir * dt * 60.0;
@@ -658,7 +651,6 @@ public:
                 s.velY += gravity * gravDir * dt * 60.0;
                 if (s.onGround && clicked) {
                     s.gravFlip = !s.gravFlip;
-                    // Teleport logic simplified
                     s.velY = 0;
                 }
                 break;
@@ -678,15 +670,12 @@ public:
         s.y += s.velY * dt * 60.0;
         s.x += s.velX * dt;
         
-        // Clamp velocity
         if (std::abs(s.velY) > 20) {
             s.velY = 20 * (s.velY > 0 ? 1 : -1);
         }
         
-        // Collisions
         checkCollisions(s, input);
         
-        // Win check
         if (s.x >= m_level.length - 50) {
             s.won = true;
         }
@@ -698,7 +687,6 @@ public:
         Rect ph = s.getHitbox();
         s.onGround = false;
         
-        // Hazards
         for (const auto& h : m_level.hazards) {
             if (h.hitbox.right() < s.x - 50) continue;
             if (h.hitbox.left() > s.x + 100) break;
@@ -710,13 +698,11 @@ public:
             }
         }
         
-        // Solids
         for (const auto& solid : m_level.solids) {
             if (solid.hitbox.right() < s.x - 50) continue;
             if (solid.hitbox.left() > s.x + 100) break;
             
             if (ph.intersects(solid.hitbox)) {
-                // Resolve
                 double overlapTop = solid.hitbox.top() - ph.bottom();
                 double overlapBot = ph.top() - solid.hitbox.bottom();
                 double overlapL = ph.right() - solid.hitbox.left();
@@ -741,7 +727,6 @@ public:
             }
         }
         
-        // Floor/ceiling
         double floor = 90;
         double ceil = 500;
         
@@ -760,7 +745,6 @@ public:
             }
         }
         
-        // Orbs
         if (input) {
             for (const auto& orb : m_level.orbs) {
                 if (orb.hitbox.right() < s.x - 50) continue;
@@ -784,7 +768,6 @@ public:
             }
         }
         
-        // Pads
         for (const auto& pad : m_level.pads) {
             if (pad.hitbox.right() < s.x - 50) continue;
             if (pad.hitbox.left() > s.x + 100) break;
@@ -802,7 +785,6 @@ public:
             }
         }
         
-        // Portals
         for (const auto& p : m_level.portals) {
             if (p.hitbox.right() < s.x - 50) continue;
             if (p.hitbox.left() > s.x + 100) break;
@@ -810,17 +792,13 @@ public:
             if (ph.intersects(p.hitbox)) {
                 int pt = p.subType;
                 
-                // Gamemode
                 if (pt >= 0 && pt <= 7) {
                     s.mode = static_cast<GameMode>(pt);
                 }
-                // Gravity
                 else if (pt == 10) s.gravFlip = true;
                 else if (pt == 11) s.gravFlip = false;
-                // Size
                 else if (pt == 20) s.mini = true;
                 else if (pt == 21) s.mini = false;
-                // Speed
                 else if (pt == 30) { s.speed = SpeedType::Slow; s.velX = getXVel(s.speed); }
                 else if (pt == 31) { s.speed = SpeedType::Normal; s.velX = getXVel(s.speed); }
                 else if (pt == 32) { s.speed = SpeedType::Fast; s.velX = getXVel(s.speed); }
@@ -984,7 +962,6 @@ private:
             }
         }
         
-        // Best effort solution
         if (!beam.empty()) {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_solution = beam[0].inputs;
@@ -1119,7 +1096,7 @@ protected:
         
         if (pf.isRunning()) {
             status = fmt::format("Finding... {:.1f}%", pf.progress() * 100);
-            prog = pf.progress();
+            prog = static_cast<float>(pf.progress());
         } else if (pf.found()) {
             if (rp.isPlaying()) {
                 status = fmt::format("Playing... {:.1f}%", rp.getProgress() * 100);
@@ -1203,11 +1180,17 @@ class $modify(PFPlayLayer, PlayLayer) {
         if (rp.isPlaying()) {
             bool inp = rp.getInput();
             
+            // Use GJBaseGameLayer methods for input (Geode 4.x compatible)
             if (inp && !m_fields->m_inputActive) {
-                this->pushButton(1, true);
+                // Simulate click by directly calling the player jump
+                if (m_player1) {
+                    GJBaseGameLayer::pushButton(1, true);
+                }
                 m_fields->m_inputActive = true;
             } else if (!inp && m_fields->m_inputActive) {
-                this->releaseButton(1, true);
+                if (m_player1) {
+                    GJBaseGameLayer::releaseButton(1, true);
+                }
                 m_fields->m_inputActive = false;
             }
             
@@ -1241,7 +1224,6 @@ class $modify(PFLevelInfoLayer, LevelInfoLayer) {
             return false;
         }
         
-        // Create button
         auto spr = CCSprite::create("GJ_button_01.png");
         spr->setScale(0.8f);
         
@@ -1255,7 +1237,6 @@ class $modify(PFLevelInfoLayer, LevelInfoLayer) {
         );
         btn->setID("pathfinder-btn"_spr);
         
-        // Find menu and add button
         if (auto menu = this->getChildByID("left-side-menu")) {
             btn->setPosition(ccp(0, -60));
             static_cast<CCMenu*>(menu)->addChild(btn);
@@ -1284,9 +1265,4 @@ class $modify(PFLevelInfoLayer, LevelInfoLayer) {
 $on_mod(Loaded) {
     PathfinderLogger::get().init();
     LOG_INFO("=== GD Pathfinder Loaded ===");
-}
-
-$on_mod(Unloaded) {
-    Pathfinder::get().stop();
-    PathfinderLogger::get().close();
 }
