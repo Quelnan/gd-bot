@@ -2,6 +2,7 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
+#include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <vector>
 #include <queue>
 #include <set>
@@ -28,12 +29,12 @@ enum class GameMode {
 };
 
 enum class SpeedType {
-    Slow,      // 0.7x
-    Normal,    // 0.9x
-    Fast,      // 1.0x
-    Faster,    // 1.1x
-    Fastest,   // 1.3x
-    SuperFast  // 1.6x+
+    Slow,
+    Normal,
+    Fast,
+    Faster,
+    Fastest,
+    SuperFast
 };
 
 // ============================================================================
@@ -60,11 +61,8 @@ struct PlayerState {
     float orbCooldown = 0;
     int lastOrbID = -1;
     
-    // Robot specific
     bool isRobotJumping = false;
     float robotJumpTime = 0;
-    
-    // Spider specific
     bool hasSpiderTeleported = false;
     
     PlayerState copy() const {
@@ -414,7 +412,6 @@ private:
     std::map<int, std::vector<LevelObject*>> m_spatialGrid;
     static constexpr float GRID_SIZE = 150.0f;
     
-    // Object ID sets
     std::set<int> m_hazardIDs = {
         8, 39, 103, 392, 9, 61, 243, 244, 245, 246, 247, 248, 249,
         363, 364, 365, 366, 367, 368, 446, 447, 678, 679, 680,
@@ -508,22 +505,22 @@ public:
             obj.isSpeedPortal = true;
             obj.portalSpeed = m_speedPortals[id];
         }
-        else if (id == 10) { // Gravity down
+        else if (id == 10) {
             obj.isPortal = true;
             obj.isGravityPortal = true;
             obj.isGravityUp = false;
         }
-        else if (id == 11) { // Gravity up
+        else if (id == 11) {
             obj.isPortal = true;
             obj.isGravityPortal = true;
             obj.isGravityUp = true;
         }
-        else if (id == 99) { // Normal size
+        else if (id == 99) {
             obj.isPortal = true;
             obj.isMiniPortal = true;
             obj.isMiniOn = false;
         }
-        else if (id == 101) { // Mini
+        else if (id == 101) {
             obj.isPortal = true;
             obj.isMiniPortal = true;
             obj.isMiniOn = true;
@@ -900,6 +897,29 @@ public:
 };
 
 // ============================================================================
+// INPUT HANDLER - Handles simulating clicks
+// ============================================================================
+
+class InputHandler {
+public:
+    static void pressJump(PlayerObject* player) {
+        if (!player) return;
+        player->pushButton(PlayerButton::Jump);
+    }
+    
+    static void releaseJump(PlayerObject* player) {
+        if (!player) return;
+        player->releaseButton(PlayerButton::Jump);
+    }
+    
+    static void setHolding(PlayerObject* player, bool holding) {
+        if (!player) return;
+        player->m_isHolding = holding;
+        player->m_hasJustHeld = holding;
+    }
+};
+
+// ============================================================================
 // DEBUG VISUALIZER
 // ============================================================================
 
@@ -908,22 +928,19 @@ private:
     CCDrawNode* m_drawNode = nullptr;
     CCLabelBMFont* m_statusLabel = nullptr;
     PlayerState m_lastState;
-    bool m_enabled = false;
     
 public:
     static DebugVisualizer* create() {
-        auto ret = new DebugVisualizer();
-        if (ret && ret->init()) {
+        auto* ret = new DebugVisualizer();
+        if (ret && ret->initVisualizer()) {
             ret->autorelease();
             return ret;
         }
-        delete ret;
+        CC_SAFE_DELETE(ret);
         return nullptr;
     }
     
-    bool init() {
-        if (!CCNode::init()) return false;
-        
+    bool initVisualizer() {
         m_drawNode = CCDrawNode::create();
         m_drawNode->setZOrder(1000);
         this->addChild(m_drawNode);
@@ -940,9 +957,6 @@ public:
         return true;
     }
     
-    void setEnabled(bool enabled) { m_enabled = enabled; }
-    bool isEnabled() const { return m_enabled; }
-    
     void updateState(const PlayerState& state) {
         m_lastState = state;
     }
@@ -956,7 +970,6 @@ public:
         bool autoEnabled = Mod::get()->getSettingValue<bool>("enabled");
         bool debugEnabled = Mod::get()->getSettingValue<bool>("show-debug");
         
-        // Update status label
         std::string status = autoEnabled ? "AutoPlayer: ON" : "AutoPlayer: OFF";
         m_statusLabel->setString(status.c_str());
         m_statusLabel->setColor(autoEnabled ? ccc3(0, 255, 0) : ccc3(255, 100, 100));
@@ -965,7 +978,7 @@ public:
         
         auto* analyzer = LevelAnalyzer::get();
         
-        // Draw predicted path (no click trajectory)
+        // Draw no-click trajectory (blue)
         PlayerState simState = m_lastState;
         std::vector<CCPoint> noClickPath;
         noClickPath.push_back(ccp(simState.x, simState.y));
@@ -976,7 +989,7 @@ public:
         }
         
         for (size_t i = 1; i < noClickPath.size(); i++) {
-            float alpha = 1.0f - (float)i / noClickPath.size();
+            float alpha = 1.0f - static_cast<float>(i) / noClickPath.size();
             m_drawNode->drawSegment(
                 noClickPath[i-1], 
                 noClickPath[i],
@@ -985,7 +998,7 @@ public:
             );
         }
         
-        // Draw predicted path (with click trajectory)
+        // Draw click trajectory (green)
         simState = m_lastState;
         std::vector<CCPoint> clickPath;
         clickPath.push_back(ccp(simState.x, simState.y));
@@ -996,7 +1009,7 @@ public:
         }
         
         for (size_t i = 1; i < clickPath.size(); i++) {
-            float alpha = 1.0f - (float)i / clickPath.size();
+            float alpha = 1.0f - static_cast<float>(i) / clickPath.size();
             m_drawNode->drawSegment(
                 clickPath[i-1], 
                 clickPath[i],
@@ -1005,9 +1018,9 @@ public:
             );
         }
         
-        // Draw nearby hazards
-        auto hazards = analyzer->getObjectsInRange(m_lastState.x - 50, m_lastState.x + 400);
-        for (auto* obj : hazards) {
+        // Draw objects
+        auto objects = analyzer->getObjectsInRange(m_lastState.x - 50, m_lastState.x + 400);
+        for (auto* obj : objects) {
             if (obj->isHazard) {
                 m_drawNode->drawDot(
                     ccp(obj->x, obj->y),
@@ -1038,14 +1051,14 @@ public:
             }
         }
         
-        // Draw player position
+        // Draw player
         m_drawNode->drawDot(
             ccp(m_lastState.x, m_lastState.y),
             8.0f,
             ccc4f(1.0f, 1.0f, 1.0f, 0.9f)
         );
         
-        // Draw ground line
+        // Draw ground
         m_drawNode->drawSegment(
             ccp(m_lastState.x - 100, PhysicsEngine::GROUND_Y),
             ccp(m_lastState.x + 400, PhysicsEngine::GROUND_Y),
@@ -1097,10 +1110,10 @@ public:
     void syncSettings() {
         m_enabled = Mod::get()->getSettingValue<bool>("enabled");
         
-        int lookahead = Mod::get()->getSettingValue<int64_t>("lookahead-frames");
-        int depth = Mod::get()->getSettingValue<int64_t>("search-depth");
-        int maxIter = Mod::get()->getSettingValue<int64_t>("max-iterations");
-        int timeLimit = Mod::get()->getSettingValue<int64_t>("time-limit-ms");
+        int lookahead = static_cast<int>(Mod::get()->getSettingValue<int64_t>("lookahead-frames"));
+        int depth = static_cast<int>(Mod::get()->getSettingValue<int64_t>("search-depth"));
+        int maxIter = static_cast<int>(Mod::get()->getSettingValue<int64_t>("max-iterations"));
+        int timeLimit = static_cast<int>(Mod::get()->getSettingValue<int64_t>("time-limit-ms"));
         
         Pathfinder::get()->setLookahead(lookahead);
         Pathfinder::get()->setSearchDepth(depth);
@@ -1151,11 +1164,13 @@ public:
         bool shouldClick = Pathfinder::get()->getNextInput(m_currentState, LevelAnalyzer::get());
         
         if (shouldClick && !m_isClicking) {
-            pl->pushButton(1, true);
+            InputHandler::pressJump(pl->m_player1);
+            InputHandler::setHolding(pl->m_player1, true);
             m_isClicking = true;
         }
         else if (!shouldClick && m_isClicking) {
-            pl->releaseButton(1, true);
+            InputHandler::releaseJump(pl->m_player1);
+            InputHandler::setHolding(pl->m_player1, false);
             m_isClicking = false;
         }
     }
@@ -1163,6 +1178,14 @@ public:
     void reset() {
         m_isClicking = false;
         Pathfinder::get()->reset();
+    }
+    
+    void forceRelease(PlayLayer* pl) {
+        if (pl && pl->m_player1) {
+            InputHandler::releaseJump(pl->m_player1);
+            InputHandler::setHolding(pl->m_player1, false);
+        }
+        m_isClicking = false;
     }
     
     PlayerState& getState() { return m_currentState; }
@@ -1243,31 +1266,58 @@ class $modify(AutoPlayLayer, PlayLayer) {
         PlayLayer::pauseGame(pause);
         
         if (pause && AutoPlayer::get()->isEnabled()) {
-            this->releaseButton(1, true);
+            AutoPlayer::get()->forceRelease(this);
         }
     }
 };
 
 // ============================================================================
-// KEYBINDS AND INITIALIZATION
+// KEYBOARD SHORTCUTS
+// ============================================================================
+
+class $modify(CCKeyboardDispatcher) {
+    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat) {
+        if (down && !repeat) {
+            if (key == KEY_F8) {
+                AutoPlayer::get()->toggle();
+                
+                Notification::create(
+                    AutoPlayer::get()->isEnabled() ? "AutoPlayer: ON" : "AutoPlayer: OFF",
+                    AutoPlayer::get()->isEnabled() ? NotificationIcon::Success : NotificationIcon::Info
+                )->show();
+                
+                return true;
+            }
+            
+            if (key == KEY_F9) {
+                bool current = Mod::get()->getSettingValue<bool>("show-debug");
+                Mod::get()->setSettingValue("show-debug", !current);
+                
+                Notification::create(
+                    !current ? "Debug View: ON" : "Debug View: OFF",
+                    NotificationIcon::Info
+                )->show();
+                
+                return true;
+            }
+        }
+        
+        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat);
+    }
+};
+
+// ============================================================================
+// MOD INITIALIZATION
 // ============================================================================
 
 $on_mod(Loaded) {
     log::info("AutoPlayer mod loaded!");
     
-    // Listen for setting changes
     listenForSettingChanges("enabled", [](bool value) {
         if (value) {
             AutoPlayer::get()->enable();
         } else {
             AutoPlayer::get()->disable();
-        }
-    });
-    
-    listenForSettingChanges("show-debug", [](bool value) {
-        auto* viz = AutoPlayer::get()->getVisualizer();
-        if (viz) {
-            viz->setEnabled(value);
         }
     });
     
@@ -1287,39 +1337,3 @@ $on_mod(Loaded) {
         Pathfinder::get()->setTimeLimit(static_cast<int>(value));
     });
 }
-
-// Keyboard shortcut to toggle
-#include <Geode/modify/CCKeyboardDispatcher.hpp>
-
-class $modify(CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat) {
-        if (down && !repeat) {
-            // F8 to toggle AutoPlayer
-            if (key == KEY_F8) {
-                AutoPlayer::get()->toggle();
-                
-                Notification::create(
-                    AutoPlayer::get()->isEnabled() ? "AutoPlayer: ON" : "AutoPlayer: OFF",
-                    AutoPlayer::get()->isEnabled() ? NotificationIcon::Success : NotificationIcon::Info
-                )->show();
-                
-                return true;
-            }
-            
-            // F9 to toggle debug visualization
-            if (key == KEY_F9) {
-                bool current = Mod::get()->getSettingValue<bool>("show-debug");
-                Mod::get()->setSettingValue("show-debug", !current);
-                
-                Notification::create(
-                    !current ? "Debug View: ON" : "Debug View: OFF",
-                    NotificationIcon::Info
-                )->show();
-                
-                return true;
-            }
-        }
-        
-        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, down, repeat);
-    }
-};
