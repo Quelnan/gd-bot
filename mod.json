@@ -2,42 +2,42 @@
   "geode": "4.10.0",
   "gd": { "win": "2.2074" },
   "id": "developer.gdbot",
-  "name": "GD AutoBot Backtracker",
+  "name": "GD AutoBot Backtracker (Engine)",
   "version": "v1.0.0",
   "developer": "Developer",
-  "description": "Deterministic fast-forward trainer that backtracks taps/holds instead of randomizing, then replays best path",
+  "description": "Deterministic engine-fast-forward backtracking bot (tap by default, hold when needed)",
   "settings": {
     "enabled": { "name": "Enabled", "type": "bool", "default": false },
 
     "updates-per-frame": {
       "name": "Training Speed (updates per frame)",
-      "description": "Deterministic fast-forward: how many real GD updates to execute per rendered frame",
+      "description": "Deterministic fast-forward. 100 = ~100x if CPU allows.",
       "type": "int",
-      "default": 60,
+      "default": 120,
       "min": 1,
       "max": 2000
     },
     "inner-budget-ms": {
       "name": "Inner Budget (ms)",
-      "description": "CPU time limit per rendered frame (prevents freezing)",
+      "description": "Limits CPU time per rendered frame so the game doesn't freeze.",
       "type": "int",
-      "default": 8,
+      "default": 10,
       "min": 1,
-      "max": 40
+      "max": 50
     },
 
     "max-frames": {
       "name": "Max Frames Per Attempt",
-      "description": "Failsafe: restart if attempt runs too long",
+      "description": "Failsafe: restart if attempt runs too long.",
       "type": "int",
-      "default": 300000,
+      "default": 400000,
       "min": 20000,
       "max": 1500000
     },
 
     "tap-length": {
       "name": "Tap Length (frames)",
-      "description": "Default click length for newly created taps",
+      "description": "Tap duration for cube-like inputs and default search duration.",
       "type": "int",
       "default": 2,
       "min": 1,
@@ -46,43 +46,42 @@
 
     "max-shift": {
       "name": "Max Shift (frames)",
-      "description": "How far earlier/later the bot will shift a tap/hold while searching",
+      "description": "Search shifts a segment by 0, -1, +1, -2, +2 ... up to this.",
       "type": "int",
-      "default": 30,
+      "default": 40,
       "min": 1,
       "max": 600
     },
 
     "insert-offset": {
       "name": "Insert Offset (frames)",
-      "description": "If there is no tap near death, insert one at (deathFrame - offset)",
+      "description": "If no segment is near the frontier, insert one at (frontier - offset).",
       "type": "int",
       "default": 10,
       "min": 1,
       "max": 300
     },
 
-    "mutation-window": {
+    "window": {
       "name": "Backtrack Window (frames)",
-      "description": "Only segments starting within [death-window, death] are considered for the \"last decision\"",
+      "description": "Only modify segments starting within [center-window, center].",
       "type": "int",
-      "default": 600,
+      "default": 800,
       "min": 60,
-      "max": 6000
+      "max": 8000
     },
-
     "prefix-lock": {
       "name": "Prefix Lock (frames)",
-      "description": "Never change segments starting earlier than (bestDeathFrame - window - prefixLock)",
+      "description": "Never modify segments that start earlier than (bestFrame - window - prefixLock).",
       "type": "int",
-      "default": 60,
+      "default": 120,
       "min": 0,
-      "max": 6000
+      "max": 8000
     },
 
     "verify-after-win": {
       "name": "Verify After Win",
-      "description": "After first completion, replay best at normal speed to confirm",
+      "description": "After first win, replay best at normal speed to confirm.",
       "type": "bool",
       "default": true
     },
