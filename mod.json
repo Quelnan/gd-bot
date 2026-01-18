@@ -1,95 +1,35 @@
 {
-  "geode": "4.10.0",
-  "gd": { "win": "2.2074" },
-  "id": "developer.gdbot",
-  "name": "GD AutoBot Backtracker (Engine)",
-  "version": "v1.0.0",
-  "developer": "Developer",
-  "description": "Deterministic engine-fast-forward backtracking bot (tap by default, hold when needed)",
-  "settings": {
-    "enabled": { "name": "Enabled", "type": "bool", "default": false },
-
-    "updates-per-frame": {
-      "name": "Training Speed (updates per frame)",
-      "description": "Deterministic fast-forward. 100 = ~100x if CPU allows.",
-      "type": "int",
-      "default": 120,
-      "min": 1,
-      "max": 2000
+    "geode": "3.0.0",
+    "gd": {
+        "win": "2.206",
+        "android": "2.206",
+        "mac": "2.206"
     },
-    "inner-budget-ms": {
-      "name": "Inner Budget (ms)",
-      "description": "Limits CPU time per rendered frame so the game doesn't freeze.",
-      "type": "int",
-      "default": 10,
-      "min": 1,
-      "max": 50
+    "id": "your.name.gdpathfinder",
+    "name": "GD Pathfinder",
+    "version": "v1.0.0",
+    "developer": "Quelnan",
+    "description": "Automatic level pathfinder with GD physics simulation",
+    "repository": "https://github.com/yourusername/gd-pathfinder",
+    "dependencies": [],
+    "resources": {
+        "files": []
     },
-
-    "max-frames": {
-      "name": "Max Frames Per Attempt",
-      "description": "Failsafe: restart if attempt runs too long.",
-      "type": "int",
-      "default": 400000,
-      "min": 20000,
-      "max": 1500000
-    },
-
-    "tap-length": {
-      "name": "Tap Length (frames)",
-      "description": "Tap duration for cube-like inputs and default search duration.",
-      "type": "int",
-      "default": 2,
-      "min": 1,
-      "max": 20
-    },
-
-    "max-shift": {
-      "name": "Max Shift (frames)",
-      "description": "Search shifts a segment by 0, -1, +1, -2, +2 ... up to this.",
-      "type": "int",
-      "default": 40,
-      "min": 1,
-      "max": 600
-    },
-
-    "insert-offset": {
-      "name": "Insert Offset (frames)",
-      "description": "If no segment is near the frontier, insert one at (frontier - offset).",
-      "type": "int",
-      "default": 10,
-      "min": 1,
-      "max": 300
-    },
-
-    "window": {
-      "name": "Backtrack Window (frames)",
-      "description": "Only modify segments starting within [center-window, center].",
-      "type": "int",
-      "default": 800,
-      "min": 60,
-      "max": 8000
-    },
-    "prefix-lock": {
-      "name": "Prefix Lock (frames)",
-      "description": "Never modify segments that start earlier than (bestFrame - window - prefixLock).",
-      "type": "int",
-      "default": 120,
-      "min": 0,
-      "max": 8000
-    },
-
-    "verify-after-win": {
-      "name": "Verify After Win",
-      "description": "After first win, replay best at normal speed to confirm.",
-      "type": "bool",
-      "default": true
-    },
-
-    "log-status": {
-      "name": "Log Status",
-      "type": "bool",
-      "default": true
+    "settings": {
+        "beam-width": {
+            "name": "Beam Width",
+            "description": "Number of states to keep during search (higher = slower but more accurate)",
+            "type": "int",
+            "default": 5000,
+            "min": 100,
+            "max": 50000
+        },
+        "log-level": {
+            "name": "Log Level",
+            "description": "Logging verbosity",
+            "type": "string",
+            "default": "info",
+            "one-of": ["debug", "info", "warn", "error"]
+        }
     }
-  }
 }
