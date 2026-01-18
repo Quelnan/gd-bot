@@ -8,6 +8,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <unordered_map>
 #include <deque>
 #include <algorithm>
 #include <chrono>
@@ -17,75 +18,93 @@
 using namespace geode::prelude;
 
 // ============================================================
-// Global state
+// Globals
 // ============================================================
 
-static bool g_botEnabled = false;
-static bool g_levelAnalyzed = false;
-static bool g_isHolding = false;
-static int  g_frameCounter = 0;
+static bool  g_enabled = false;
+static bool  g_levelAnalyzed = false;
+static bool  g_isHolding = false;
+static bool  g_prevDead = false;
+static int   g_frameCounter = 0;
 
 static float g_playerX = 0.f;
 static float g_playerY = 0.f;
 static float g_playerYVel = 0.f;
-static bool  g_playerOnGround = false;
-static bool  g_isUpsideDown = false;
-static bool  g_isMini = false;
+static bool  g_onGround = false;
+static bool  g_upsideDown = false;
+static bool  g_mini = false;
 static float g_xSpeed = 311.58f / 240.f;
 
-enum class BotGameMode { Cube, Ship, Ball, UFO, Wave, Robot, Spider, Swing };
-static BotGameMode g_gameMode = BotGameMode::Cube;
+enum class Mode { Cube, Ship, Ball, UFO, Wave, Robot, Spider, Swing };
+static Mode g_mode = Mode::Cube;
 
 // ============================================================
-// Settings
+// Settings cache
 // ============================================================
 
-struct BotSettings {
-    int simFrames = 180;
-    int stepFrames = 3;
+struct Settings {
+    bool enabled = false;
+
     int beamWidth = 64;
-    int timeBudgetMs = 4;
+    int horizonFrames = 240;
+    int stepFrames = 3;
     int replanEvery = 6;
+    int budgetMs = 4;
     int tapFrames = 2;
 
-    float hitboxScale = 0.9f;
-    float hazardHitboxScale = 1.0f;
+    float playerHitboxScale = 0.9f;
+    float objHitboxScale = 1.0f;
     float safeMargin = 2.0f;
-    float nearScanRange = 600.0f;
 
-    bool debugOverlay = true;
+    bool debugHud = true;
     bool debugDraw = false;
+
+    bool learn = true;
+    float learnBin = 60.f;
+    float learnStrength = 1.0f;
 
     void load() {
         auto* m = Mod::get();
-        simFrames = (int)m->getSettingValue<int64_t>("sim-frames");
-        stepFrames = (int)m->getSettingValue<int64_t>("step-frames");
+        enabled = m->getSettingValue<bool>("enabled");
+
         beamWidth = (int)m->getSettingValue<int64_t>("beam-width");
-        timeBudgetMs = (int)m->getSettingValue<int64_t>("time-budget-ms");
+        horizonFrames = (int)m->getSettingValue<int64_t>("horizon-frames");
+        stepFrames = (int)m->getSettingValue<int64_t>("step-frames");
         replanEvery = (int)m->getSettingValue<int64_t>("replan-every");
-        tapFrames = (int)m->getSettingValue<int64_t>("hold-duration");
+        budgetMs = (int)m->getSettingValue<int64_t>("time-budget-ms");
+        tapFrames = (int)m->getSettingValue<int64_t>("tap-frames");
 
-        hitboxScale = (float)m->getSettingValue<double>("hitbox-scale");
-        hazardHitboxScale = (float)m->getSettingValue<double>("hazard-hitbox-scale");
+        playerHitboxScale = (float)m->getSettingValue<double>("player-hitbox-scale");
+        objHitboxScale = (float)m->getSettingValue<double>("obj-hitbox-scale");
         safeMargin = (float)m->getSettingValue<double>("safe-margin");
-        nearScanRange = (float)m->getSettingValue<double>("near-scan-range");
 
-        debugOverlay = m->getSettingValue<bool>("debug-overlay");
+        debugHud = m->getSettingValue<bool>("debug-hud");
         debugDraw = m->getSettingValue<bool>("debug-draw");
 
-        simFrames = std::clamp(simFrames, 30, 720);
-        stepFrames = std::clamp(stepFrames, 1, 10);
+        learn = m->getSettingValue<bool>("learn");
+        learnBin = (float)m->getSettingValue<double>("learn-bin");
+        learnStrength = (float)m->getSettingValue<double>("learn-strength");
+
         beamWidth = std::clamp(beamWidth, 8, 256);
-        timeBudgetMs = std::clamp(timeBudgetMs, 1, 12);
+        horizonFrames = std::clamp(horizonFrames, 30, 720);
+        stepFrames = std::clamp(stepFrames, 1, 10);
         replanEvery = std::clamp(replanEvery, 1, 30);
+        budgetMs = std::clamp(budgetMs, 1, 12);
         tapFrames = std::clamp(tapFrames, 1, 10);
+
+        playerHitboxScale = std::clamp(playerHitboxScale, 0.5f, 1.3f);
+        objHitboxScale = std::clamp(objHitboxScale, 0.7f, 1.6f);
+        safeMargin = std::clamp(safeMargin, 0.f, 12.f);
+
+        learnBin = std::clamp(learnBin, 10.f, 300.f);
+        learnStrength = std::clamp(learnStrength, 0.f, 5.f);
     }
 };
 
-static BotSettings g_settings;
+static Settings g_set;
 
 // ============================================================
-// IDs (extend SOLID_IDS as you encounter custom blocks)
+// IDs (NOTE: solids list is incomplete; extend as needed)
 // ============================================================
 
 static const std::set<int> HAZARD_IDS = {
@@ -99,13 +118,11 @@ static const std::set<int> HAZARD_IDS = {
     88,89,98,397,398,399,740,741,742
 };
 
-// IMPORTANT: This is incomplete. Add more IDs as needed.
-// This list is intentionally conservative to avoid treating decoration as solid.
+// Conservative “likely solid” IDs.
+// If the bot still runs into blocks, you must extend this set.
 static const std::set<int> SOLID_IDS = []{
     std::set<int> s;
-    // Many common solids are in 1..34 (classic block set).
     for (int id = 1; id <= 34; ++id) s.insert(id);
-    // Common extra blocks (you can extend)
     for (int id = 40; id <= 48; ++id) s.insert(id);
     return s;
 }();
@@ -113,38 +130,32 @@ static const std::set<int> SOLID_IDS = []{
 static const std::map<int, int> ORB_IDS = {
     {36, 0}, {84, 1}, {141, 2}, {1022, 3}, {1330, 4}, {1333, 5}, {1704, 6}, {1751, 7}
 };
-
 static const std::map<int, int> PAD_IDS = {
     {35, 0}, {67, 1}, {140, 2}, {1332, 3}, {452, 4}
 };
 
-static const std::map<int, BotGameMode> PORTAL_IDS = {
-    {12, BotGameMode::Cube}, {13, BotGameMode::Ship}, {47, BotGameMode::Ball},
-    {111, BotGameMode::UFO}, {660, BotGameMode::Wave}, {745, BotGameMode::Robot},
-    {1331, BotGameMode::Spider}, {1933, BotGameMode::Swing}
-};
-
 // ============================================================
-// Physics constants
+// Physics constants (approx)
 // ============================================================
 
 namespace Phys {
-    constexpr float GROUND = 105.0f;
-    constexpr float CEILING = 2085.0f;
+    constexpr float GROUND = 105.f;
+    constexpr float CEILING = 2085.f;
 
-    constexpr float GRAVITY = 0.958199f;
+    constexpr float GRAV = 0.958199f;
     constexpr float JUMP = 11.180032f;
     constexpr float JUMP_MINI = 9.4f;
 
     constexpr float SHIP_ACCEL = 0.8f;
-    constexpr float SHIP_MAX = 8.0f;
+    constexpr float SHIP_MAX = 8.f;
 
-    constexpr float UFO_BOOST = 7.0f;
-    constexpr float BALL_VEL = 6.0f;
+    constexpr float BALL_VEL = 6.f;
 
-    constexpr float MAX_VEL = 15.0f;
+    constexpr float UFO_BOOST = 7.f;
 
-    constexpr float PLAYER_SIZE = 30.0f;
+    constexpr float MAX_VEL = 15.f;
+
+    constexpr float PLAYER_SIZE = 30.f;
     constexpr float MINI_SCALE = 0.6f;
     constexpr float WAVE_SCALE = 0.5f;
 
@@ -159,219 +170,187 @@ namespace Phys {
 // Level objects
 // ============================================================
 
-struct LevelObj {
+struct Obj {
     int id = 0;
     float x = 0, y = 0;
     float w = 0, h = 0;
 
-    bool isHazard = false;
-    bool isSolid = false;
-    bool isOrb = false;
-    bool isPad = false;
-    bool isPortal = false;
+    bool hazard = false;
+    bool solid = false;
+    bool orb = false;
+    bool pad = false;
 
-    int subType = 0; // orb/pad
-    BotGameMode portalMode = BotGameMode::Cube;
-
-    bool gravityPortal = false;
-    bool gravityUp = false;
-
-    bool sizePortal = false;
-    bool sizeMini = false;
-
-    bool speedPortal = false;
-    float speedVal = 1.0f;
+    int sub = 0;
 };
 
-static std::vector<LevelObj>   g_objects;
-static std::vector<LevelObj*>  g_hazards;
-static std::vector<LevelObj*>  g_solids;
-static std::vector<LevelObj*>  g_orbs;
-static std::vector<LevelObj*>  g_pads;
-static std::vector<LevelObj*>  g_portals;
+static std::vector<Obj> g_objs;
+static std::vector<const Obj*> g_haz;
+static std::vector<const Obj*> g_sol;
+static std::vector<const Obj*> g_orb;
+static std::vector<const Obj*> g_pad;
 
 // ============================================================
-// Utility
+// Learning (session)
+// penalize bins for actions that lead to death
 // ============================================================
 
-static inline bool isPlatformMode(BotGameMode m) {
-    return m == BotGameMode::Cube || m == BotGameMode::Ball || m == BotGameMode::Robot || m == BotGameMode::Spider;
+static std::unordered_map<int, float> g_penaltyHold;
+static std::unordered_map<int, float> g_penaltyRelease;
+
+struct RecentDecision {
+    int bin = 0;
+    bool hold = false;
+};
+static std::deque<RecentDecision> g_recent;
+static const size_t MAX_RECENT = 200;
+
+static int binForX(float x) {
+    return (int)std::floor(x / std::max(1.f, g_set.learnBin));
 }
 
-static float getPlayerSizeFor(bool mini, BotGameMode mode) {
+// ============================================================
+// Helpers
+// ============================================================
+
+static inline bool platformMode(Mode m) {
+    return m == Mode::Cube || m == Mode::Ball || m == Mode::Robot || m == Mode::Spider;
+}
+
+static float playerSize(bool mini, Mode mode) {
     float sz = Phys::PLAYER_SIZE;
     if (mini) sz *= Phys::MINI_SCALE;
-    if (mode == BotGameMode::Wave) sz *= Phys::WAVE_SCALE;
-    return sz * g_settings.hitboxScale;
+    if (mode == Mode::Wave) sz *= Phys::WAVE_SCALE;
+    return sz * g_set.playerHitboxScale;
 }
 
-static bool aabbOverlap(float px, float py, float psz, const LevelObj& o, float extraMargin = 0.f) {
-    float ph = psz / 2.f + g_settings.safeMargin + extraMargin;
-    float ow = (o.w * g_settings.hazardHitboxScale) / 2.f;
-    float oh = (o.h * g_settings.hazardHitboxScale) / 2.f;
+static bool aabb(float px, float py, float psz, const Obj& o, float extra = 0.f) {
+    float ph = psz / 2.f + g_set.safeMargin + extra;
+    float ow = (o.w * g_set.objHitboxScale) / 2.f;
+    float oh = (o.h * g_set.objHitboxScale) / 2.f;
 
     return !(px + ph < o.x - ow || px - ph > o.x + ow || py + ph < o.y - oh || py - ph > o.y + oh);
 }
 
-// Find range by X in sorted pointer vectors
-template <class Vec>
-static std::pair<typename Vec::const_iterator, typename Vec::const_iterator>
-rangeByX(const Vec& v, float minX, float maxX) {
-    auto lb = std::lower_bound(v.begin(), v.end(), minX, [](auto* obj, float x) {
-        return obj->x < x;
-    });
-    auto ub = std::upper_bound(v.begin(), v.end(), maxX, [](float x, auto* obj) {
-        return x < obj->x;
-    });
-    return { lb, ub };
-}
-
 // ============================================================
-// Level analyzer
+// Analyze level (no pointers stored to temporary memory)
 // ============================================================
 
 static void analyzeLevel(PlayLayer* pl) {
-    g_objects.clear();
-    g_hazards.clear();
-    g_solids.clear();
-    g_orbs.clear();
-    g_pads.clear();
-    g_portals.clear();
     g_levelAnalyzed = false;
+    g_objs.clear();
+    g_haz.clear();
+    g_sol.clear();
+    g_orb.clear();
+    g_pad.clear();
 
     if (!pl || !pl->m_objects) return;
 
-    int hazardCount = 0, solidCount = 0, orbCount = 0, padCount = 0, portalCount = 0;
+    int hazards = 0, solids = 0, orbs = 0, pads = 0;
+
+    g_objs.reserve((size_t)pl->m_objects->count() / 2);
 
     for (int i = 0; i < pl->m_objects->count(); i++) {
-        auto* obj = static_cast<GameObject*>(pl->m_objects->objectAtIndex(i));
-        if (!obj) continue;
+        auto* go = static_cast<GameObject*>(pl->m_objects->objectAtIndex(i));
+        if (!go) continue;
 
-        int id = obj->m_objectID;
+        int id = go->m_objectID;
 
-        LevelObj lo;
-        lo.id = id;
-        lo.x = obj->getPositionX();
-        lo.y = obj->getPositionY();
+        Obj o;
+        o.id = id;
+        o.x = go->getPositionX();
+        o.y = go->getPositionY();
 
-        // Use contentSize*scale as collision approximation
-        auto sz = obj->getContentSize();
-        float sc = obj->getScale();
-        lo.w = std::max(5.f, sz.width * sc * 0.9f);
-        lo.h = std::max(5.f, sz.height * sc * 0.9f);
+        auto sz = go->getContentSize();
+        float sc = go->getScale();
+        o.w = std::max(5.f, sz.width * sc * 0.9f);
+        o.h = std::max(5.f, sz.height * sc * 0.9f);
 
         bool important = false;
 
         if (HAZARD_IDS.count(id)) {
-            lo.isHazard = true;
+            o.hazard = true;
+            hazards++;
             important = true;
-            hazardCount++;
-        }
-        else if (SOLID_IDS.count(id)) {
-            lo.isSolid = true;
+        } else if (SOLID_IDS.count(id)) {
+            o.solid = true;
+            solids++;
             important = true;
-            solidCount++;
-        }
-        else if (auto it = ORB_IDS.find(id); it != ORB_IDS.end()) {
-            lo.isOrb = true;
-            lo.subType = it->second;
+        } else if (auto it = ORB_IDS.find(id); it != ORB_IDS.end()) {
+            o.orb = true;
+            o.sub = it->second;
+            orbs++;
             important = true;
-            orbCount++;
-        }
-        else if (auto it = PAD_IDS.find(id); it != PAD_IDS.end()) {
-            lo.isPad = true;
-            lo.subType = it->second;
+        } else if (auto it = PAD_IDS.find(id); it != PAD_IDS.end()) {
+            o.pad = true;
+            o.sub = it->second;
+            pads++;
             important = true;
-            padCount++;
         }
-        else if (auto it = PORTAL_IDS.find(id); it != PORTAL_IDS.end()) {
-            lo.isPortal = true;
-            lo.portalMode = it->second;
-            important = true;
-            portalCount++;
-        }
-        else if (id == 10) { lo.isPortal = true; lo.gravityPortal = true; lo.gravityUp = false; important = true; portalCount++; }
-        else if (id == 11) { lo.isPortal = true; lo.gravityPortal = true; lo.gravityUp = true;  important = true; portalCount++; }
-        else if (id == 99) { lo.isPortal = true; lo.sizePortal = true; lo.sizeMini = false;   important = true; portalCount++; }
-        else if (id == 101){ lo.isPortal = true; lo.sizePortal = true; lo.sizeMini = true;    important = true; portalCount++; }
-        else if (id == 200){ lo.isPortal = true; lo.speedPortal = true; lo.speedVal = 0.7f;   important = true; portalCount++; }
-        else if (id == 201){ lo.isPortal = true; lo.speedPortal = true; lo.speedVal = 0.9f;   important = true; portalCount++; }
-        else if (id == 202){ lo.isPortal = true; lo.speedPortal = true; lo.speedVal = 1.0f;   important = true; portalCount++; }
-        else if (id == 203){ lo.isPortal = true; lo.speedPortal = true; lo.speedVal = 1.1f;   important = true; portalCount++; }
-        else if (id == 1334){lo.isPortal = true; lo.speedPortal = true; lo.speedVal = 1.3f;   important = true; portalCount++; }
 
-        if (important) g_objects.push_back(lo);
+        if (important) g_objs.push_back(o);
     }
 
-    std::sort(g_objects.begin(), g_objects.end(), [](const LevelObj& a, const LevelObj& b) {
-        return a.x < b.x;
-    });
+    std::sort(g_objs.begin(), g_objs.end(), [](const Obj& a, const Obj& b) { return a.x < b.x; });
 
-    for (auto& o : g_objects) {
-        if (o.isHazard) g_hazards.push_back(&o);
-        if (o.isSolid)  g_solids.push_back(&o);
-        if (o.isOrb)    g_orbs.push_back(&o);
-        if (o.isPad)    g_pads.push_back(&o);
-        if (o.isPortal) g_portals.push_back(&o);
+    for (auto& o : g_objs) {
+        if (o.hazard) g_haz.push_back(&o);
+        if (o.solid)  g_sol.push_back(&o);
+        if (o.orb)    g_orb.push_back(&o);
+        if (o.pad)    g_pad.push_back(&o);
     }
 
-    log::info("Bot: {} hazards, {} solids, {} orbs, {} pads, {} portals",
-        hazardCount, solidCount, orbCount, padCount, portalCount);
+    log::info("Bot: {} hazards, {} solids, {} orbs, {} pads", hazards, solids, orbs, pads);
 
     g_levelAnalyzed = true;
 }
 
 // ============================================================
-// Death checks (hazards + bounds)
+// Collision / death checks
 // ============================================================
 
-static bool willDieHazards(float x, float y, bool mini, BotGameMode mode) {
-    float psz = getPlayerSizeFor(mini, mode);
+static bool dieHazards(float x, float y, bool mini, Mode mode) {
+    float psz = playerSize(mini, mode);
 
-    float minX = x - 80.f;
-    float maxX = x + g_settings.nearScanRange;
+    // only check near window
+    float minX = x - 120.f;
+    float maxX = x + 500.f;
 
-    auto [b, e] = rangeByX(g_hazards, minX, maxX);
-    for (auto it = b; it != e; ++it) {
-        if (aabbOverlap(x, y, psz, **it)) return true;
+    for (auto* h : g_haz) {
+        if (h->x < minX) continue;
+        if (h->x > maxX) break;
+        if (aabb(x, y, psz, *h)) return true;
     }
 
-    // bounds
-    if (y < Phys::GROUND - 80.f || y > Phys::CEILING + 80.f) return true;
+    // bounds (loose)
+    if (y < Phys::GROUND - 100.f || y > Phys::CEILING + 100.f) return true;
     return false;
 }
 
-// Platform solid collision resolution:
-// - landing on top is allowed (sets onGround)
-// - side/bottom collision kills
-static bool resolveSolidsPlatform(
-    float& x, float& y, float& yVel, bool& onGround,
-    bool upsideDown, bool mini, BotGameMode mode,
-    float prevX, float prevY
-) {
-    float psz = getPlayerSizeFor(mini, mode);
+// platform resolution: land on top, die on side/bottom
+static bool resolveSolidsPlatform(float& x, float& y, float& yVel, bool& onGround,
+                                 bool upsideDown, bool mini, Mode mode,
+                                 float prevX, float prevY) {
+    float psz = playerSize(mini, mode);
     float pHalf = psz / 2.f;
 
-    float minX = x - 120.f;
-    float maxX = x + 200.f;
+    float minX = x - 150.f;
+    float maxX = x + 250.f;
 
-    auto [b, e] = rangeByX(g_solids, minX, maxX);
-    for (auto it = b; it != e; ++it) {
-        const LevelObj& s = **it;
-        if (!aabbOverlap(x, y, psz, s)) continue;
+    for (auto* s : g_sol) {
+        if (s->x < minX) continue;
+        if (s->x > maxX) break;
+        if (!aabb(x, y, psz, *s)) continue;
 
-        float ow = (s.w * g_settings.hazardHitboxScale) / 2.f;
-        float oh = (s.h * g_settings.hazardHitboxScale) / 2.f;
+        float ow = (s->w * g_set.objHitboxScale) / 2.f;
+        float oh = (s->h * g_set.objHitboxScale) / 2.f;
 
-        float solidLeft   = s.x - ow;
-        float solidRight  = s.x + ow;
-        float solidBottom = s.y - oh;
-        float solidTop    = s.y + oh;
+        float solidTop = s->y + oh;
+        float solidBottom = s->y - oh;
 
         float prevBottom = prevY - pHalf;
-        float prevTop    = prevY + pHalf;
-        float curBottom  = y - pHalf;
-        float curTop     = y + pHalf;
+        float prevTop = prevY + pHalf;
+        float curBottom = y - pHalf;
+        float curTop = y + pHalf;
 
         const float eps = 2.0f;
 
@@ -383,7 +362,7 @@ static bool resolveSolidsPlatform(
                 onGround = true;
                 continue;
             }
-            // hit underside => die
+            // hit underside -> die
             if (prevTop <= solidBottom + eps && curTop > solidBottom) {
                 return false;
             }
@@ -395,74 +374,38 @@ static bool resolveSolidsPlatform(
                 onGround = true;
                 continue;
             }
-            // hit "top" in upside-down => die
+            // hit "top" in upside-down -> die
             if (prevBottom >= solidTop - eps && curBottom < solidTop) {
                 return false;
             }
         }
 
-        // side collision => die
+        // side -> die
         return false;
     }
 
     return true;
 }
 
-static bool willDieOnSolidsNonPlatform(float x, float y, bool mini, BotGameMode mode) {
-    float psz = getPlayerSizeFor(mini, mode);
+static bool dieSolidsNonPlatform(float x, float y, bool mini, Mode mode) {
+    float psz = playerSize(mini, mode);
 
-    float minX = x - 120.f;
-    float maxX = x + 200.f;
+    float minX = x - 150.f;
+    float maxX = x + 250.f;
 
-    auto [b, e] = rangeByX(g_solids, minX, maxX);
-    for (auto it = b; it != e; ++it) {
-        if (aabbOverlap(x, y, psz, **it)) return true;
+    for (auto* s : g_sol) {
+        if (s->x < minX) continue;
+        if (s->x > maxX) break;
+        if (aabb(x, y, psz, *s)) return true;
     }
     return false;
 }
 
 // ============================================================
-// Orbs/Pads/Portals detection (AABB)
+// Simulation (trajectory engine)
 // ============================================================
 
-static LevelObj* findOrb(float x, float y, bool mini, BotGameMode mode) {
-    float psz = getPlayerSizeFor(mini, mode) * 1.5f;
-    float minX = x - 80.f;
-    float maxX = x + 80.f;
-    auto [b, e] = rangeByX(g_orbs, minX, maxX);
-    for (auto it = b; it != e; ++it) {
-        if (aabbOverlap(x, y, psz, **it, 0.f)) return *it;
-    }
-    return nullptr;
-}
-
-static LevelObj* findPad(float x, float y, bool mini, BotGameMode mode) {
-    float psz = getPlayerSizeFor(mini, mode);
-    float minX = x - 80.f;
-    float maxX = x + 80.f;
-    auto [b, e] = rangeByX(g_pads, minX, maxX);
-    for (auto it = b; it != e; ++it) {
-        if (aabbOverlap(x, y, psz, **it, 0.f)) return *it;
-    }
-    return nullptr;
-}
-
-static LevelObj* findPortal(float x, float y, bool mini, BotGameMode mode) {
-    float psz = getPlayerSizeFor(mini, mode) * 2.0f;
-    float minX = x - 100.f;
-    float maxX = x + 100.f;
-    auto [b, e] = rangeByX(g_portals, minX, maxX);
-    for (auto it = b; it != e; ++it) {
-        if (aabbOverlap(x, y, psz, **it, 0.f)) return *it;
-    }
-    return nullptr;
-}
-
-// ============================================================
-// Simulation state
-// ============================================================
-
-struct SimState {
+struct Sim {
     float x = 0, y = 0;
     float yVel = 0;
     float xSpeed = 0;
@@ -472,8 +415,7 @@ struct SimState {
     bool canJump = true;
     bool upsideDown = false;
     bool mini = false;
-
-    BotGameMode mode = BotGameMode::Cube;
+    Mode mode = Mode::Cube;
 
     float orbCD = 0.f;
     int lastOrb = -1;
@@ -481,31 +423,35 @@ struct SimState {
     bool dead = false;
 };
 
-// Apply interactions in sim
-static void simInteract(SimState& s, bool hold) {
-    // portals
-    if (auto* p = findPortal(s.x, s.y, s.mini, s.mode)) {
-        if (p->gravityPortal) {
-            s.upsideDown = p->gravityUp;
-        } else if (p->sizePortal) {
-            s.mini = p->sizeMini;
-        } else if (p->speedPortal) {
-            // set xSpeed from portal speed
-            if (p->speedVal <= 0.8f) s.xSpeed = Phys::SPEED_SLOW / 240.f;
-            else if (p->speedVal <= 0.95f) s.xSpeed = Phys::SPEED_NORMAL / 240.f;
-            else if (p->speedVal <= 1.05f) s.xSpeed = Phys::SPEED_FAST / 240.f;
-            else if (p->speedVal <= 1.15f) s.xSpeed = Phys::SPEED_FASTER / 240.f;
-            else s.xSpeed = Phys::SPEED_FASTEST / 240.f;
-        } else if (p->isPortal) {
-            s.mode = p->portalMode;
-            s.yVel *= 0.5f;
-        }
+static Obj const* findOrbAt(float x, float y, bool mini, Mode mode) {
+    float psz = playerSize(mini, mode) * 1.5f;
+    float minX = x - 100.f;
+    float maxX = x + 100.f;
+    for (auto* o : g_orb) {
+        if (o->x < minX) continue;
+        if (o->x > maxX) break;
+        if (aabb(x, y, psz, *o)) return o;
     }
+    return nullptr;
+}
 
-    // pads
-    if (auto* pad = findPad(s.x, s.y, s.mini, s.mode)) {
+static Obj const* findPadAt(float x, float y, bool mini, Mode mode) {
+    float psz = playerSize(mini, mode);
+    float minX = x - 100.f;
+    float maxX = x + 100.f;
+    for (auto* p : g_pad) {
+        if (p->x < minX) continue;
+        if (p->x > maxX) break;
+        if (aabb(x, y, psz, *p)) return p;
+    }
+    return nullptr;
+}
+
+static void simInteract(Sim& s, bool hold) {
+    // pads (auto)
+    if (auto* p = findPadAt(s.x, s.y, s.mini, s.mode)) {
         float b = 0.f;
-        switch (pad->subType) {
+        switch (p->sub) {
             case 0: b = 12.f; break;
             case 1: b = 16.f; break;
             case 2: b = 20.f; break;
@@ -520,11 +466,11 @@ static void simInteract(SimState& s, bool hold) {
 
     // orbs (only when holding)
     if (hold && s.orbCD <= 0.f) {
-        if (auto* orb = findOrb(s.x, s.y, s.mini, s.mode)) {
-            if (orb->id != s.lastOrb) {
+        if (auto* o = findOrbAt(s.x, s.y, s.mini, s.mode)) {
+            if (o->id != s.lastOrb) {
                 float b = 0.f;
                 bool flip = false;
-                switch (orb->subType) {
+                switch (o->sub) {
                     case 0: b = 11.2f; break;
                     case 1: b = 14.f; break;
                     case 2: b = 18.f; break;
@@ -534,21 +480,19 @@ static void simInteract(SimState& s, bool hold) {
                     case 7: b = 15.f; break;
                     default: break;
                 }
-
                 if (flip) s.upsideDown = !s.upsideDown;
                 if (b != 0.f) {
                     s.yVel = s.upsideDown ? -b : b;
                     s.onGround = false;
                 }
-
                 s.orbCD = 0.1f;
-                s.lastOrb = orb->id;
+                s.lastOrb = o->id;
             }
         }
     }
 }
 
-static void simFrame(SimState& s, bool hold) {
+static void simFrame(Sim& s, bool hold) {
     if (s.dead) return;
 
     s.prevX = s.x;
@@ -556,15 +500,15 @@ static void simFrame(SimState& s, bool hold) {
 
     if (s.orbCD > 0.f) s.orbCD -= 1.f / 240.f;
 
-    float g = Phys::GRAVITY * (s.mini ? 0.8f : 1.0f);
+    float g = Phys::GRAV * (s.mini ? 0.8f : 1.0f);
     if (s.upsideDown) g = -g;
 
     float groundY = s.upsideDown ? Phys::CEILING : Phys::GROUND;
 
     switch (s.mode) {
-        case BotGameMode::Cube:
-        case BotGameMode::Robot:
-        case BotGameMode::Spider: {
+        case Mode::Cube:
+        case Mode::Robot:
+        case Mode::Spider: {
             s.yVel -= g;
             s.yVel = std::clamp(s.yVel, -Phys::MAX_VEL, Phys::MAX_VEL);
             s.y += s.yVel;
@@ -574,7 +518,6 @@ static void simFrame(SimState& s, bool hold) {
                 s.y = groundY;
                 s.yVel = 0.f;
                 s.onGround = true;
-                // allow jump again once released
             } else {
                 s.onGround = false;
             }
@@ -588,7 +531,7 @@ static void simFrame(SimState& s, bool hold) {
             if (!hold) s.canJump = true;
         } break;
 
-        case BotGameMode::Ship: {
+        case Mode::Ship: {
             float acc = s.mini ? 0.6f : Phys::SHIP_ACCEL;
             float maxV = s.mini ? 6.f : Phys::SHIP_MAX;
             s.yVel += hold ? (s.upsideDown ? -acc : acc) : (s.upsideDown ? acc : -acc);
@@ -597,7 +540,7 @@ static void simFrame(SimState& s, bool hold) {
             s.onGround = false;
         } break;
 
-        case BotGameMode::Ball: {
+        case Mode::Ball: {
             s.yVel -= g * 0.6f;
             s.yVel = std::clamp(s.yVel, -12.f, 12.f);
             s.y += s.yVel;
@@ -619,7 +562,7 @@ static void simFrame(SimState& s, bool hold) {
             if (!hold) s.canJump = true;
         } break;
 
-        case BotGameMode::UFO: {
+        case Mode::UFO: {
             s.yVel -= g * 0.5f;
             s.yVel = std::clamp(s.yVel, -8.f, 8.f);
             s.y += s.yVel;
@@ -632,13 +575,13 @@ static void simFrame(SimState& s, bool hold) {
             if (!hold) s.canJump = true;
         } break;
 
-        case BotGameMode::Wave: {
+        case Mode::Wave: {
             float ws = s.xSpeed * (s.mini ? 0.7f : 1.0f);
             s.y += hold ? (s.upsideDown ? -ws : ws) : (s.upsideDown ? ws : -ws);
             s.onGround = false;
         } break;
 
-        case BotGameMode::Swing: {
+        case Mode::Swing: {
             float sg = (hold ? -g : g) * 0.56f;
             s.yVel += sg;
             s.yVel = std::clamp(s.yVel, -8.f, 8.f);
@@ -648,25 +591,24 @@ static void simFrame(SimState& s, bool hold) {
     }
 
     s.x += s.xSpeed;
-    s.y = std::clamp(s.y, Phys::GROUND - 100.f, Phys::CEILING + 100.f);
 
-    // interactions then collisions
+    // interactions
     simInteract(s, hold);
 
-    // hazards kill always
-    if (willDieHazards(s.x, s.y, s.mini, s.mode)) {
+    // hazards kill
+    if (dieHazards(s.x, s.y, s.mini, s.mode)) {
         s.dead = true;
         return;
     }
 
     // solids
-    if (isPlatformMode(s.mode)) {
+    if (platformMode(s.mode)) {
         if (!resolveSolidsPlatform(s.x, s.y, s.yVel, s.onGround, s.upsideDown, s.mini, s.mode, s.prevX, s.prevY)) {
             s.dead = true;
             return;
         }
     } else {
-        if (willDieOnSolidsNonPlatform(s.x, s.y, s.mini, s.mode)) {
+        if (dieSolidsNonPlatform(s.x, s.y, s.mini, s.mode)) {
             s.dead = true;
             return;
         }
@@ -674,254 +616,15 @@ static void simFrame(SimState& s, bool hold) {
 }
 
 // ============================================================
-// Planner (Beam Search)
+// Trajectory-style debug draw (two paths: hold vs release)
 // ============================================================
 
-enum class ActionType : uint8_t { Hold, Release, Tap };
-
-struct BeamNode {
-    SimState s;
-    float score = -1e30f;
-    std::vector<ActionType> steps;
-};
-
-static float approxDistanceToDanger(const SimState& s) {
-    // compute min distance to nearest hazard/solid AABB in a window
-    float psz = getPlayerSizeFor(s.mini, s.mode);
-    float minDist = 1e9f;
-
-    auto scanSet = [&](const std::vector<LevelObj*>& vec, bool onlyForward) {
-        float minX = s.x - 120.f;
-        float maxX = s.x + g_settings.nearScanRange;
-        if (onlyForward) minX = s.x - 20.f;
-
-        auto [b, e] = rangeByX(vec, minX, maxX);
-        for (auto it = b; it != e; ++it) {
-            const LevelObj& o = **it;
-            float ow = (o.w * g_settings.hazardHitboxScale) / 2.f;
-            float oh = (o.h * g_settings.hazardHitboxScale) / 2.f;
-            float ph = psz / 2.f;
-
-            // AABB separation distance (0 if overlapping)
-            float dx = std::max(0.f, std::abs(s.x - o.x) - (ph + ow));
-            float dy = std::max(0.f, std::abs(s.y - o.y) - (ph + oh));
-            float d = std::sqrt(dx*dx + dy*dy);
-            if (d < minDist) minDist = d;
-        }
-    };
-
-    scanSet(g_hazards, true);
-    scanSet(g_solids, true);
-
-    if (minDist > 1e8f) minDist = 999.f;
-    return minDist;
-}
-
-static float scoreState(const SimState& s) {
-    // progress heavily weighted
-    float progress = s.x;
-
-    // safety: map distance to 0..1
-    float d = approxDistanceToDanger(s);
-    float safe01 = std::clamp(d / 60.f, 0.f, 1.f);
-
-    // keep y reasonable (very rough)
-    float targetY = 300.f;
-    float yPenalty = std::abs(s.y - targetY) * 0.002f;
-
-    return progress * 10.f + safe01 * 800.f - yPenalty * 200.f;
-}
-
-class BeamPlanner {
-public:
-    void reset() {
-        m_planSteps.clear();
-        m_stepFrame = 0;
-        m_sincePlan = 0;
-    }
-
-    bool getHold(const SimState& current, bool currentHold, bool& outHold) {
-        if (m_planSteps.empty() || (++m_sincePlan >= g_settings.replanEvery)) {
-            m_sincePlan = 0;
-            plan(current, currentHold);
-        }
-
-        if (m_planSteps.empty()) {
-            outHold = false;
-            return false;
-        }
-
-        // Expand one step into per-frame output
-        ActionType act = m_planSteps.front();
-        outHold = holdForAction(act, m_stepFrame);
-
-        m_stepFrame++;
-        if (m_stepFrame >= g_settings.stepFrames) {
-            m_stepFrame = 0;
-            m_planSteps.pop_front();
-        }
-
-        return true;
-    }
-
-private:
-    std::deque<ActionType> m_planSteps;
-    int m_stepFrame = 0;
-    int m_sincePlan = 0;
-
-    static bool holdForAction(ActionType a, int stepFrameIndex) {
-        switch (a) {
-            case ActionType::Hold:    return true;
-            case ActionType::Release: return false;
-            case ActionType::Tap:     return stepFrameIndex < g_settings.tapFrames;
-        }
-        return false;
-    }
-
-    static std::vector<ActionType> actionSetForMode(BotGameMode mode) {
-        // Tap is important for UFO/Ball; wave/ship still benefit sometimes.
-        if (mode == BotGameMode::UFO || mode == BotGameMode::Ball) {
-            return { ActionType::Release, ActionType::Tap, ActionType::Hold };
-        }
-        return { ActionType::Release, ActionType::Hold, ActionType::Tap };
-    }
-
-    void plan(const SimState& start, bool startHold) {
-        m_planSteps.clear();
-        m_stepFrame = 0;
-
-        auto t0 = std::chrono::high_resolution_clock::now();
-
-        std::vector<BeamNode> beam;
-        beam.reserve((size_t)g_settings.beamWidth);
-
-        BeamNode root;
-        root.s = start;
-        root.score = scoreState(start);
-        beam.push_back(std::move(root));
-
-        std::vector<BeamNode> next;
-        next.reserve((size_t)g_settings.beamWidth * 3);
-
-        int steps = std::max(1, g_settings.simFrames / std::max(1, g_settings.stepFrames));
-        auto actions = actionSetForMode(start.mode);
-
-        for (int step = 0; step < steps; ++step) {
-            next.clear();
-
-            for (auto const& n : beam) {
-                for (auto act : actions) {
-                    BeamNode c;
-                    c.s = n.s;
-                    c.steps = n.steps;
-                    c.steps.push_back(act);
-
-                    // simulate stepFrames with this action
-                    for (int k = 0; k < g_settings.stepFrames; ++k) {
-                        bool hold = holdForAction(act, k);
-                        simFrame(c.s, hold);
-                        if (c.s.dead) break;
-                    }
-                    if (c.s.dead) continue;
-
-                    c.score = scoreState(c.s);
-                    next.push_back(std::move(c));
-                }
-            }
-
-            if (next.empty()) break;
-
-            std::nth_element(
-                next.begin(),
-                next.begin() + std::min((int)next.size() - 1, g_settings.beamWidth - 1),
-                next.end(),
-                [](const BeamNode& a, const BeamNode& b) { return a.score > b.score; }
-            );
-
-            std::sort(next.begin(), next.end(), [](const BeamNode& a, const BeamNode& b) {
-                return a.score > b.score;
-            });
-
-            if ((int)next.size() > g_settings.beamWidth) next.resize((size_t)g_settings.beamWidth);
-            beam = next;
-
-            auto t1 = std::chrono::high_resolution_clock::now();
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-            if (ms >= g_settings.timeBudgetMs) break;
-        }
-
-        if (!beam.empty()) {
-            auto const& best = beam.front();
-            for (auto a : best.steps) m_planSteps.push_back(a);
-        }
-    }
-};
-
-static BeamPlanner g_planner;
-
-// ============================================================
-// Debug HUD (screen-space, stable)
-// ============================================================
-
-class BotHUD : public CCNode {
-public:
-    CCLabelBMFont* l1 = nullptr;
-    CCLabelBMFont* l2 = nullptr;
-
-    static BotHUD* create() {
-        auto* r = new BotHUD();
-        if (r && r->init()) { r->autorelease(); return r; }
-        CC_SAFE_DELETE(r);
-        return nullptr;
-    }
-
-    bool init() override {
-        if (!CCNode::init()) return false;
-        auto ws = CCDirector::sharedDirector()->getWinSize();
-
-        l1 = CCLabelBMFont::create("Bot: OFF", "bigFont.fnt");
-        l1->setScale(0.4f);
-        l1->setAnchorPoint(ccp(0, 1));
-        l1->setPosition(ccp(10.f, ws.height - 10.f));
-        addChild(l1);
-
-        l2 = CCLabelBMFont::create("", "chatFont.fnt");
-        l2->setScale(0.55f);
-        l2->setAnchorPoint(ccp(0, 1));
-        l2->setPosition(ccp(10.f, ws.height - 35.f));
-        addChild(l2);
-
-        scheduleUpdate();
-        return true;
-    }
-
-    void update(float) override {
-        g_settings.load();
-        setVisible(g_settings.debugOverlay);
-
-        l1->setString(g_botEnabled ? "Bot: ON" : "Bot: OFF");
-        l1->setColor(g_botEnabled ? ccc3(0,255,0) : ccc3(255,100,100));
-
-        const char* modes[] = {"Cube","Ship","Ball","UFO","Wave","Robot","Spider","Swing"};
-        char buf[256];
-        snprintf(buf, sizeof(buf), "X:%.0f  Y:%.0f  vY:%.2f  %s",
-            g_playerX, g_playerY, g_playerYVel, modes[(int)g_gameMode]);
-        l2->setString(buf);
-    }
-};
-
-static BotHUD* g_hud = nullptr;
-
-// ============================================================
-// Debug Draw (world-space, on object layer)
-// ============================================================
-
-class BotWorldDebug : public CCNode {
+class WorldDebug : public CCNode {
 public:
     CCDrawNode* dn = nullptr;
 
-    static BotWorldDebug* create() {
-        auto* r = new BotWorldDebug();
+    static WorldDebug* create() {
+        auto* r = new WorldDebug();
         if (r && r->init()) { r->autorelease(); return r; }
         CC_SAFE_DELETE(r);
         return nullptr;
@@ -936,62 +639,134 @@ public:
     }
 
     void update(float) override {
-        g_settings.load();
+        g_set.load();
         dn->clear();
-        if (!g_settings.debugDraw || !g_levelAnalyzed) return;
+        if (!g_set.debugDraw || !g_levelAnalyzed) return;
 
-        float psz = getPlayerSizeFor(g_isMini, g_gameMode);
-        dn->drawRect(
-            ccp(g_playerX - psz/2, g_playerY - psz/2),
-            ccp(g_playerX + psz/2, g_playerY + psz/2),
-            ccc4f(1,1,1,0.2f), 1.f, ccc4f(1,1,1,0.8f)
-        );
+        // draw hazards/solids around player
+        float psz = playerSize(g_mini, g_mode);
+        dn->drawRect(ccp(g_playerX - psz/2, g_playerY - psz/2), ccp(g_playerX + psz/2, g_playerY + psz/2),
+            ccc4f(1,1,1,0.2f), 1.f, ccc4f(1,1,1,0.7f));
 
         float minX = g_playerX - 200.f;
         float maxX = g_playerX + 800.f;
 
-        auto drawBox = [&](const LevelObj& o, ccColor4F fill, ccColor4F stroke) {
-            float ow = (o.w * g_settings.hazardHitboxScale) / 2.f;
-            float oh = (o.h * g_settings.hazardHitboxScale) / 2.f;
+        auto drawBox = [&](const Obj& o, ccColor4F fill, ccColor4F stroke) {
+            float ow = (o.w * g_set.objHitboxScale) / 2.f;
+            float oh = (o.h * g_set.objHitboxScale) / 2.f;
             dn->drawRect(ccp(o.x-ow, o.y-oh), ccp(o.x+ow, o.y+oh), fill, 1.f, stroke);
         };
 
-        auto [hb, he] = rangeByX(g_hazards, minX, maxX);
-        for (auto it = hb; it != he; ++it) drawBox(**it, ccc4f(1,0,0,0.12f), ccc4f(1,0,0,0.45f));
+        for (auto* h : g_haz) { if (h->x < minX) continue; if (h->x > maxX) break; drawBox(*h, ccc4f(1,0,0,0.12f), ccc4f(1,0,0,0.5f)); }
+        for (auto* s : g_sol) { if (s->x < minX) continue; if (s->x > maxX) break; drawBox(*s, ccc4f(0.2f,0.6f,1,0.10f), ccc4f(0.2f,0.6f,1,0.35f)); }
 
-        auto [sb, se] = rangeByX(g_solids, minX, maxX);
-        for (auto it = sb; it != se; ++it) drawBox(**it, ccc4f(0.2f,0.6f,1,0.10f), ccc4f(0.2f,0.6f,1,0.35f));
+        // trajectory: NO HOLD (red)
+        Sim a;
+        a.x = g_playerX; a.y = g_playerY; a.yVel = g_playerYVel; a.xSpeed = g_xSpeed;
+        a.onGround = g_onGround; a.canJump = !g_isHolding;
+        a.upsideDown = g_upsideDown; a.mini = g_mini; a.mode = g_mode;
+
+        CCPoint prev = ccp(a.x, a.y);
+        for (int i = 0; i < 120; i++) {
+            simFrame(a, false);
+            CCPoint cur = ccp(a.x, a.y);
+            float alpha = 0.8f * (1.f - (float)i / 120.f);
+            dn->drawSegment(prev, cur, 1.5f, ccc4f(1,0.3f,0.3f,alpha));
+            prev = cur;
+            if (a.dead) break;
+        }
+
+        // trajectory: HOLD (green)
+        Sim b = a;
+        b.dead = false;
+        prev = ccp(b.x, b.y);
+        for (int i = 0; i < 120; i++) {
+            simFrame(b, true);
+            CCPoint cur = ccp(b.x, b.y);
+            float alpha = 0.8f * (1.f - (float)i / 120.f);
+            dn->drawSegment(prev, cur, 1.5f, ccc4f(0.3f,1,0.3f,alpha));
+            prev = cur;
+            if (b.dead) break;
+        }
     }
 };
 
-static BotWorldDebug* g_dbg = nullptr;
+class HUD : public CCNode {
+public:
+    CCLabelBMFont* l1 = nullptr;
+    CCLabelBMFont* l2 = nullptr;
 
-// ============================================================
-// Hooks
-// ============================================================
+    static HUD* create() {
+        auto* r = new HUD();
+        if (r && r->init()) { r->autorelease(); return r; }
+        CC_SAFE_DELETE(r);
+        return nullptr;
+    }
 
+    bool init() override {
+        if (!CCNode::init()) return false;
+        auto ws = CCDirector::sharedDirector()->getWinSize();
+
+        l1 = CCLabelBMFont::create("Bot: OFF", "bigFont.fnt");
+        l1->setScale(0.4f);
+        l1->setAnchorPoint(ccp(0,1));
+        l1->setPosition(ccp(10, ws.height - 10));
+        addChild(l1);
+
+        l2 = CCLabelBMFont::create("", "chatFont.fnt");
+        l2->setScale(0.55f);
+        l2->setAnchorPoint(ccp(0,1));
+        l2->setPosition(ccp(10, ws.height - 35));
+        addChild(l2);
+
+        scheduleUpdate();
+        return true;
+    }
+
+    void update(float) override {
+        g_set.load();
+        setVisible(g_set.debugHud);
+
+        l1->setString(g_enabled ? "Bot: ON" : "Bot: OFF");
+        l1->setColor(g_enabled ? ccc3(0,255,0) : ccc3(255,100,100));
+
+        const char* modes[] = {"Cube","Ship","Ball","UFO","Wave","Robot","Spider","Swing"};
+        char buf[256];
+        snprintf(buf, sizeof(buf), "X:%.0f Y:%.0f vY:%.2f %s", g_playerX, g_playerY, g_playerYVel, modes[(int)g_mode]);
+        l2->setString(buf);
+    }
+};
+
+// per-level pointers stored in PlayLayer Fields (prevents crashes)
 class $modify(BotPlayLayer, PlayLayer) {
+    struct Fields {
+        HUD* hud = nullptr;
+        WorldDebug* dbg = nullptr;
+    };
+
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
 
-        g_settings.load();
-        g_planner.reset();
-
-        g_levelAnalyzed = false;
+        g_set.load();
+        g_enabled = g_set.enabled;
+        g_prevDead = false;
         g_isHolding = false;
         g_frameCounter = 0;
 
-        // Attach HUD to running scene (screen space, does not move)
-        if (!g_hud) g_hud = BotHUD::create();
-        if (g_hud->getParent()) g_hud->removeFromParentAndCleanup(false);
-        CCDirector::sharedDirector()->getRunningScene()->addChild(g_hud, 999999);
+        // reset learning per level (session learning)
+        g_penaltyHold.clear();
+        g_penaltyRelease.clear();
+        g_recent.clear();
 
-        // Attach debug draw to object layer (world space)
-        if (!g_dbg) g_dbg = BotWorldDebug::create();
-        if (g_dbg->getParent()) g_dbg->removeFromParentAndCleanup(false);
-        if (this->m_objectLayer) this->m_objectLayer->addChild(g_dbg, 999998);
-        else this->addChild(g_dbg, 999998);
+        // HUD in screen space: attach to scene (no moving)
+        m_fields->hud = HUD::create();
+        CCDirector::sharedDirector()->getRunningScene()->addChild(m_fields->hud, 999999);
 
+        // Debug draw in world space: attach to PlayLayer (moves with level)
+        m_fields->dbg = WorldDebug::create();
+        this->addChild(m_fields->dbg, 999998);
+
+        g_levelAnalyzed = false;
         return true;
     }
 
@@ -1002,52 +777,275 @@ class $modify(BotPlayLayer, PlayLayer) {
 
     void resetLevel() {
         PlayLayer::resetLevel();
-        g_planner.reset();
+        g_prevDead = false;
+        g_isHolding = false;
+        g_recent.clear();
 
-        if (g_isHolding) {
-            if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
-            g_isHolding = false;
-        }
-
-        // some levels rebuild objects after reset; ensure analyzed
         if (!g_levelAnalyzed) analyzeLevel(this);
     }
 
     void onQuit() {
-        g_planner.reset();
-        if (g_hud && g_hud->getParent()) g_hud->removeFromParentAndCleanup(false);
-        if (g_dbg && g_dbg->getParent()) g_dbg->removeFromParentAndCleanup(false);
+        // prevent crashes: remove HUD manually (it lives on scene)
+        if (m_fields->hud && m_fields->hud->getParent()) {
+            m_fields->hud->removeFromParentAndCleanup(true);
+        }
+        m_fields->hud = nullptr;
+
+        // dbg is child of playlayer and will be destroyed automatically; still null it
+        m_fields->dbg = nullptr;
+
         PlayLayer::onQuit();
     }
 };
 
+// ============================================================
+// Planner (beam search) with learning penalties
+// ============================================================
+
+enum class Action : uint8_t { Hold, Release, Tap };
+
+static bool holdFor(Action a, int withinStep) {
+    if (a == Action::Hold) return true;
+    if (a == Action::Release) return false;
+    // Tap: hold only for first tapFrames frames of the step
+    return withinStep < g_set.tapFrames;
+}
+
+struct Node {
+    Sim s;
+    float score = -1e30f;
+    int parent = -1;
+    Action act = Action::Release;
+};
+
+class Planner {
+public:
+    void reset() {
+        plan.clear();
+        framesSincePlan = 0;
+        stepFrame = 0;
+    }
+
+    bool getNextHold(const Sim& start, bool currentHold, bool& outHold) {
+        if (plan.empty() || (++framesSincePlan >= g_set.replanEvery)) {
+            framesSincePlan = 0;
+            buildPlan(start);
+        }
+
+        if (plan.empty()) {
+            outHold = false;
+            return false;
+        }
+
+        Action a = plan.front();
+        outHold = holdFor(a, stepFrame);
+
+        stepFrame++;
+        if (stepFrame >= g_set.stepFrames) {
+            stepFrame = 0;
+            plan.pop_front();
+        }
+
+        return true;
+    }
+
+private:
+    std::deque<Action> plan;
+    int framesSincePlan = 0;
+    int stepFrame = 0;
+
+    float actionPenalty(float x, Action a) {
+        if (!g_set.learn) return 0.f;
+        int bin = binForX(x);
+        if (a == Action::Hold || a == Action::Tap) {
+            auto it = g_penaltyHold.find(bin);
+            return it == g_penaltyHold.end() ? 0.f : it->second;
+        } else {
+            auto it = g_penaltyRelease.find(bin);
+            return it == g_penaltyRelease.end() ? 0.f : it->second;
+        }
+    }
+
+    float scoreState(const Sim& s, Action lastAct) {
+        // Progress dominates
+        float progress = s.x * 10.f;
+
+        // Safety: distance to nearest danger (rough)
+        float psz = playerSize(s.mini, s.mode);
+        float bestD = 9999.f;
+
+        float minX = s.x - 120.f;
+        float maxX = s.x + 600.f;
+
+        auto checkVec = [&](const std::vector<const Obj*>& v) {
+            for (auto* o : v) {
+                if (o->x < minX) continue;
+                if (o->x > maxX) break;
+
+                float ow = (o->w * g_set.objHitboxScale) / 2.f;
+                float oh = (o->h * g_set.objHitboxScale) / 2.f;
+                float ph = psz / 2.f;
+
+                float dx = std::max(0.f, std::abs(s.x - o->x) - (ph + ow));
+                float dy = std::max(0.f, std::abs(s.y - o->y) - (ph + oh));
+                float d = std::sqrt(dx*dx + dy*dy);
+                bestD = std::min(bestD, d);
+            }
+        };
+
+        checkVec(g_haz);
+        checkVec(g_sol);
+
+        float safe01 = std::clamp(bestD / 60.f, 0.f, 1.f);
+        float safety = safe01 * 800.f;
+
+        // y regularization
+        float yPenalty = std::abs(s.y - 300.f) * 0.2f;
+
+        // learning penalty
+        float lp = actionPenalty(s.x, lastAct) * 500.f;
+
+        return progress + safety - yPenalty - lp;
+    }
+
+    void buildPlan(const Sim& start) {
+        plan.clear();
+        stepFrame = 0;
+
+        auto t0 = std::chrono::high_resolution_clock::now();
+
+        int steps = std::max(1, g_set.horizonFrames / std::max(1, g_set.stepFrames));
+        int B = g_set.beamWidth;
+
+        std::vector<std::vector<Node>> layers;
+        layers.reserve((size_t)steps + 1);
+        layers.push_back({});
+        layers.back().reserve((size_t)B);
+        layers.back().push_back(Node{ start, scoreState(start, Action::Release), -1, Action::Release });
+
+        const std::vector<Action> actions = { Action::Release, Action::Hold, Action::Tap };
+
+        for (int step = 0; step < steps; ++step) {
+            auto& prev = layers.back();
+            std::vector<Node> next;
+            next.reserve((size_t)prev.size() * actions.size());
+
+            for (int i = 0; i < (int)prev.size(); ++i) {
+                for (auto a : actions) {
+                    Node n;
+                    n.s = prev[i].s;
+                    n.parent = i;
+                    n.act = a;
+
+                    for (int k = 0; k < g_set.stepFrames; ++k) {
+                        bool hold = holdFor(a, k);
+                        simFrame(n.s, hold);
+                        if (n.s.dead) break;
+                    }
+                    if (n.s.dead) continue;
+
+                    n.score = scoreState(n.s, a);
+                    next.push_back(std::move(n));
+                }
+            }
+
+            if (next.empty()) break;
+
+            // keep top B
+            if ((int)next.size() > B) {
+                std::nth_element(next.begin(), next.begin() + (B - 1), next.end(),
+                    [](const Node& a, const Node& b) { return a.score > b.score; });
+                next.resize((size_t)B);
+            }
+            std::sort(next.begin(), next.end(), [](const Node& a, const Node& b) { return a.score > b.score; });
+
+            layers.push_back(std::move(next));
+
+            auto t1 = std::chrono::high_resolution_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+            if (ms >= g_set.budgetMs) break;
+        }
+
+        // find best final node
+        int bestLayer = (int)layers.size() - 1;
+        while (bestLayer > 0 && layers[bestLayer].empty()) bestLayer--;
+
+        if (bestLayer <= 0 || layers[bestLayer].empty()) return;
+
+        int bestIdx = 0; // layers are sorted
+        // backtrack
+        std::vector<Action> reversed;
+        int layer = bestLayer;
+        int idx = bestIdx;
+
+        while (layer > 0) {
+            const Node& n = layers[layer][idx];
+            reversed.push_back(n.act);
+            idx = n.parent;
+            layer--;
+            if (idx < 0) break;
+        }
+
+        std::reverse(reversed.begin(), reversed.end());
+        for (auto a : reversed) plan.push_back(a);
+    }
+};
+
+static Planner g_planner;
+
+// ============================================================
+// GJBaseGameLayer update: read state, detect death, learn, apply planner
+// ============================================================
+
 class $modify(BotGameLayer, GJBaseGameLayer) {
     void update(float dt) {
         GJBaseGameLayer::update(dt);
+
         g_frameCounter++;
+        g_set.load();
+        g_enabled = g_set.enabled;
 
         auto* pl = PlayLayer::get();
         if (!pl || !m_player1) return;
         if (!g_levelAnalyzed) return;
-        if (!g_botEnabled) return;
-        if (pl->m_isPaused || pl->m_hasCompletedLevel || m_player1->m_isDead) return;
 
-        // read player state
+        bool deadNow = m_player1->m_isDead;
+        if (!g_prevDead && deadNow) {
+            // learning: penalize last few decisions
+            if (g_set.learn) {
+                int count = 0;
+                while (!g_recent.empty() && count < 60) {
+                    auto d = g_recent.back();
+                    g_recent.pop_back();
+                    float add = 0.25f * g_set.learnStrength; // small incremental
+                    if (d.hold) g_penaltyHold[d.bin] += add;
+                    else g_penaltyRelease[d.bin] += add;
+                    count++;
+                }
+            }
+            g_planner.reset();
+        }
+        g_prevDead = deadNow;
+
+        if (!g_enabled) return;
+        if (pl->m_isPaused || pl->m_hasCompletedLevel || deadNow) return;
+
+        // read state
         g_playerX = m_player1->getPositionX();
         g_playerY = m_player1->getPositionY();
         g_playerYVel = m_player1->m_yVelocity;
-        g_playerOnGround = m_player1->m_isOnGround;
-        g_isUpsideDown = m_player1->m_isUpsideDown;
-        g_isMini = (m_player1->m_vehicleSize != 1.0f);
+        g_onGround = m_player1->m_isOnGround;
+        g_upsideDown = m_player1->m_isUpsideDown;
+        g_mini = (m_player1->m_vehicleSize != 1.0f);
 
-        if (m_player1->m_isShip) g_gameMode = BotGameMode::Ship;
-        else if (m_player1->m_isBall) g_gameMode = BotGameMode::Ball;
-        else if (m_player1->m_isBird) g_gameMode = BotGameMode::UFO;
-        else if (m_player1->m_isDart) g_gameMode = BotGameMode::Wave;
-        else if (m_player1->m_isRobot) g_gameMode = BotGameMode::Robot;
-        else if (m_player1->m_isSpider) g_gameMode = BotGameMode::Spider;
-        else if (m_player1->m_isSwing) g_gameMode = BotGameMode::Swing;
-        else g_gameMode = BotGameMode::Cube;
+        if (m_player1->m_isShip) g_mode = Mode::Ship;
+        else if (m_player1->m_isBall) g_mode = Mode::Ball;
+        else if (m_player1->m_isBird) g_mode = Mode::UFO;
+        else if (m_player1->m_isDart) g_mode = Mode::Wave;
+        else if (m_player1->m_isRobot) g_mode = Mode::Robot;
+        else if (m_player1->m_isSpider) g_mode = Mode::Spider;
+        else if (m_player1->m_isSwing) g_mode = Mode::Swing;
+        else g_mode = Mode::Cube;
 
         float spd = m_player1->m_playerSpeed;
         if (spd <= 0.8f) g_xSpeed = Phys::SPEED_SLOW / 240.f;
@@ -1056,26 +1054,29 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
         else if (spd <= 1.15f) g_xSpeed = Phys::SPEED_FASTER / 240.f;
         else g_xSpeed = Phys::SPEED_FASTEST / 240.f;
 
-        // reload settings occasionally
-        if (g_frameCounter % 120 == 0) g_settings.load();
-
-        // build sim start state
-        SimState cur;
+        // build sim start
+        Sim cur;
         cur.x = g_playerX;
         cur.y = g_playerY;
         cur.yVel = g_playerYVel;
         cur.xSpeed = g_xSpeed;
-        cur.onGround = g_playerOnGround;
-        // IMPORTANT: approximate canJump based on hold state
+        cur.onGround = g_onGround;
         cur.canJump = !g_isHolding;
-        cur.upsideDown = g_isUpsideDown;
-        cur.mini = g_isMini;
-        cur.mode = g_gameMode;
-        cur.dead = false;
+        cur.upsideDown = g_upsideDown;
+        cur.mini = g_mini;
+        cur.mode = g_mode;
 
         bool plannedHold = false;
-        g_planner.getHold(cur, g_isHolding, plannedHold);
+        g_planner.getNextHold(cur, g_isHolding, plannedHold);
 
+        // store decision for learning
+        if (g_set.learn) {
+            int bin = binForX(g_playerX);
+            g_recent.push_back({ bin, plannedHold });
+            if (g_recent.size() > MAX_RECENT) g_recent.pop_front();
+        }
+
+        // apply input
         if (plannedHold != g_isHolding) {
             this->handleButton(plannedHold, 1, true);
             g_isHolding = plannedHold;
@@ -1083,55 +1084,65 @@ class $modify(BotGameLayer, GJBaseGameLayer) {
     }
 };
 
+// ============================================================
+// Pause settings button + toggle
+// ============================================================
+
 class $modify(BotPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
 
         auto ws = CCDirector::sharedDirector()->getWinSize();
-
         auto* menu = CCMenu::create();
-        menu->setPosition(ccp(0, 0));
-        this->addChild(menu, 200);
+        menu->setPosition(ccp(0,0));
+        addChild(menu, 200);
 
-        // Bot toggle
+        // Enable toggle (binds to setting)
         auto* onSpr = CCSprite::createWithSpriteFrameName("GJ_checkOn_001.png");
         auto* offSpr = CCSprite::createWithSpriteFrameName("GJ_checkOff_001.png");
-        auto* togg = CCMenuItemToggler::create(offSpr, onSpr, this, menu_selector(BotPauseLayer::onToggleBot));
-        togg->setPosition(ccp(ws.width - 30.f, ws.height - 30.f));
-        togg->toggle(g_botEnabled);
-        menu->addChild(togg);
+        auto* t = CCMenuItemToggler::create(offSpr, onSpr, this, menu_selector(BotPauseLayer::onToggle));
+        t->setPosition(ccp(ws.width - 30.f, ws.height - 30.f));
+        t->toggle(Mod::get()->getSettingValue<bool>("enabled"));
+        menu->addChild(t);
 
-        // Settings gear
-        auto* gearSpr = CCSprite::createWithSpriteFrameName("GJ_optionsBtn_001.png");
-        auto* gearBtn = CCMenuItemSpriteExtra::create(gearSpr, this, menu_selector(BotPauseLayer::onOpenSettings));
+        // Gear opens settings
+        auto* gear = CCSprite::createWithSpriteFrameName("GJ_optionsBtn_001.png");
+        auto* gearBtn = CCMenuItemSpriteExtra::create(gear, this, menu_selector(BotPauseLayer::onSettings));
         gearBtn->setPosition(ccp(ws.width - 30.f, ws.height - 75.f));
         gearBtn->setScale(0.7f);
         menu->addChild(gearBtn);
     }
 
-    void onToggleBot(CCObject*) {
-        g_botEnabled = !g_botEnabled;
+    void onToggle(CCObject*) {
+        bool v = !Mod::get()->getSettingValue<bool>("enabled");
+        Mod::get()->setSettingValue("enabled", v);
+        g_enabled = v;
         g_planner.reset();
 
-        if (!g_botEnabled && g_isHolding) {
+        if (!g_enabled && g_isHolding) {
             if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
             g_isHolding = false;
         }
     }
 
-    void onOpenSettings(CCObject*) {
-        // This is the API you said worked in your earlier version.
+    void onSettings(CCObject*) {
         openSettingsPopup(Mod::get());
     }
 };
 
+// ============================================================
+// Keyboard toggle (F8)
+// ============================================================
+
 class $modify(CCKeyboardDispatcher) {
     bool dispatchKeyboardMSG(enumKeyCodes key, bool down, bool repeat) {
         if (down && !repeat && key == KEY_F8) {
-            g_botEnabled = !g_botEnabled;
+            bool v = !Mod::get()->getSettingValue<bool>("enabled");
+            Mod::get()->setSettingValue("enabled", v);
+            g_enabled = v;
             g_planner.reset();
 
-            if (!g_botEnabled && g_isHolding) {
+            if (!g_enabled && g_isHolding) {
                 if (auto* gj = GJBaseGameLayer::get()) gj->handleButton(false, 1, true);
                 g_isHolding = false;
             }
@@ -1141,7 +1152,11 @@ class $modify(CCKeyboardDispatcher) {
     }
 };
 
+// ============================================================
+// Mod init
+// ============================================================
+
 $on_mod(Loaded) {
-    g_settings.load();
-    log::info("GD AutoBot loaded (F8 toggle).");
+    g_set.load();
+    log::info("GD AutoBot loaded. F8 toggles enabled. Settings in Geode / pause gear.");
 }
