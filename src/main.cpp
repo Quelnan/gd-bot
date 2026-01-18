@@ -1,7 +1,6 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/GJBaseGameLayer.hpp>
-#include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <vector>
 #include <queue>
@@ -14,7 +13,7 @@
 using namespace geode::prelude;
 
 // ============================================================================
-// GLOBAL STATE - Simple globals for reliability
+// GLOBAL STATE
 // ============================================================================
 
 static bool g_autoPlayerEnabled = false;
@@ -27,23 +26,11 @@ static bool g_levelAnalyzed = false;
 // ============================================================================
 
 enum class GameMode {
-    Cube,
-    Ship,
-    Ball,
-    UFO,
-    Wave,
-    Robot,
-    Spider,
-    Swing
+    Cube, Ship, Ball, UFO, Wave, Robot, Spider, Swing
 };
 
 enum class SpeedType {
-    Slow,
-    Normal,
-    Fast,
-    Faster,
-    Fastest,
-    SuperFast
+    Slow, Normal, Fast, Faster, Fastest, SuperFast
 };
 
 // ============================================================================
@@ -54,7 +41,6 @@ struct PlayerState {
     float x = 0;
     float y = 105.0f;
     float yVel = 0;
-    float rotation = 0;
     
     GameMode gameMode = GameMode::Cube;
     SpeedType speed = SpeedType::Normal;
@@ -104,18 +90,9 @@ struct LevelObject {
 class PhysicsEngine {
 public:
     static constexpr float GRAVITY_CUBE = 0.958199f;
-    static constexpr float GRAVITY_SHIP = 0.8f;
-    static constexpr float GRAVITY_BALL = 0.6f;
-    static constexpr float GRAVITY_UFO = 0.5f;
-    static constexpr float GRAVITY_ROBOT = 0.958199f;
-    static constexpr float GRAVITY_SPIDER = 0.6f;
-    static constexpr float GRAVITY_SWING = 0.7f;
-    
-    static constexpr float JUMP_VELOCITY = 11.180032f;
-    static constexpr float UFO_BOOST = 7.0f;
-    
     static constexpr float GROUND_Y = 105.0f;
     static constexpr float CEILING_Y = 2085.0f;
+    static constexpr float JUMP_VELOCITY = 11.180032f;
     
     static float getSpeedMultiplier(SpeedType speed) {
         switch (speed) {
@@ -132,15 +109,15 @@ public:
     static float getGravity(GameMode mode, bool mini) {
         float g;
         switch (mode) {
-            case GameMode::Cube:   g = GRAVITY_CUBE; break;
-            case GameMode::Ship:   g = GRAVITY_SHIP; break;
-            case GameMode::Ball:   g = GRAVITY_BALL; break;
-            case GameMode::UFO:    g = GRAVITY_UFO; break;
+            case GameMode::Cube:   g = 0.958199f; break;
+            case GameMode::Ship:   g = 0.8f; break;
+            case GameMode::Ball:   g = 0.6f; break;
+            case GameMode::UFO:    g = 0.5f; break;
             case GameMode::Wave:   g = 0.0f; break;
-            case GameMode::Robot:  g = GRAVITY_ROBOT; break;
-            case GameMode::Spider: g = GRAVITY_SPIDER; break;
-            case GameMode::Swing:  g = GRAVITY_SWING; break;
-            default: g = GRAVITY_CUBE;
+            case GameMode::Robot:  g = 0.958199f; break;
+            case GameMode::Spider: g = 0.6f; break;
+            case GameMode::Swing:  g = 0.7f; break;
+            default: g = 0.958199f;
         }
         return mini ? g * 0.8f : g;
     }
@@ -148,234 +125,123 @@ public:
     static void simulateFrame(PlayerState& state, bool clicking, float dt = 1.0f/240.0f) {
         float gravity = getGravity(state.gameMode, state.isMini);
         if (state.isUpsideDown) gravity = -gravity;
-        
         float xSpeed = getSpeedMultiplier(state.speed) * dt;
         
         if (state.orbCooldown > 0) state.orbCooldown -= dt;
         
         switch (state.gameMode) {
-            case GameMode::Cube:
-                simulateCube(state, clicking, gravity);
+            case GameMode::Cube: {
+                state.yVel -= gravity;
+                state.yVel = std::clamp(state.yVel, -15.0f, 15.0f);
+                state.y += state.yVel;
+                
+                float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
+                if ((!state.isUpsideDown && state.y <= groundY) ||
+                    (state.isUpsideDown && state.y >= groundY)) {
+                    state.y = groundY;
+                    state.yVel = 0;
+                    state.isOnGround = true;
+                    state.canJump = true;
+                } else {
+                    state.isOnGround = false;
+                }
+                
+                if (clicking && state.canJump && state.isOnGround) {
+                    float jumpVel = state.isMini ? 9.4f : JUMP_VELOCITY;
+                    state.yVel = state.isUpsideDown ? -jumpVel : jumpVel;
+                    state.isOnGround = false;
+                    state.canJump = false;
+                }
+                if (!clicking) state.canJump = true;
                 break;
-            case GameMode::Ship:
-                simulateShip(state, clicking);
+            }
+            case GameMode::Ship: {
+                if (clicking) {
+                    state.yVel += (state.isUpsideDown ? -0.8f : 0.8f);
+                } else {
+                    state.yVel -= (state.isUpsideDown ? -0.8f : 0.8f);
+                }
+                state.yVel = std::clamp(state.yVel, -8.0f, 8.0f);
+                state.y += state.yVel;
                 break;
-            case GameMode::Ball:
-                simulateBall(state, clicking, gravity);
+            }
+            case GameMode::Ball: {
+                state.yVel -= gravity;
+                state.yVel = std::clamp(state.yVel, -12.0f, 12.0f);
+                state.y += state.yVel;
+                
+                float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
+                if ((!state.isUpsideDown && state.y <= groundY) ||
+                    (state.isUpsideDown && state.y >= groundY)) {
+                    state.y = groundY;
+                    state.yVel = 0;
+                    state.isOnGround = true;
+                } else {
+                    state.isOnGround = false;
+                }
+                
+                if (clicking && state.canJump && state.isOnGround) {
+                    state.isUpsideDown = !state.isUpsideDown;
+                    state.yVel = state.isUpsideDown ? -6.0f : 6.0f;
+                    state.canJump = false;
+                }
+                if (!clicking) state.canJump = true;
                 break;
-            case GameMode::UFO:
-                simulateUFO(state, clicking, gravity);
+            }
+            case GameMode::UFO: {
+                state.yVel -= gravity;
+                state.yVel = std::clamp(state.yVel, -8.0f, 8.0f);
+                state.y += state.yVel;
+                
+                float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
+                if ((!state.isUpsideDown && state.y <= groundY) ||
+                    (state.isUpsideDown && state.y >= groundY)) {
+                    state.y = groundY;
+                    state.yVel = 0;
+                }
+                
+                if (clicking && state.canJump) {
+                    state.yVel = state.isUpsideDown ? -7.0f : 7.0f;
+                    state.canJump = false;
+                }
+                if (!clicking) state.canJump = true;
                 break;
-            case GameMode::Wave:
-                simulateWave(state, clicking, xSpeed);
+            }
+            case GameMode::Wave: {
+                float waveSpeed = xSpeed * (state.isMini ? 0.8f : 1.0f);
+                if (clicking) {
+                    state.y += state.isUpsideDown ? -waveSpeed : waveSpeed;
+                } else {
+                    state.y += state.isUpsideDown ? waveSpeed : -waveSpeed;
+                }
                 break;
-            case GameMode::Robot:
-                simulateRobot(state, clicking, gravity, dt);
-                break;
-            case GameMode::Spider:
-                simulateSpider(state, clicking, gravity);
-                break;
-            case GameMode::Swing:
-                simulateSwing(state, clicking, gravity);
+            }
+            default:
+                // Robot, Spider, Swing - simplified cube-like behavior
+                state.yVel -= gravity;
+                state.yVel = std::clamp(state.yVel, -15.0f, 15.0f);
+                state.y += state.yVel;
+                
+                if (state.y <= GROUND_Y) {
+                    state.y = GROUND_Y;
+                    state.yVel = 0;
+                    state.isOnGround = true;
+                    state.canJump = true;
+                }
+                
+                if (clicking && state.canJump && state.isOnGround) {
+                    state.yVel = JUMP_VELOCITY;
+                    state.canJump = false;
+                }
+                if (!clicking) state.canJump = true;
                 break;
         }
         
         state.x += xSpeed;
-        handleBoundaries(state);
-    }
-    
-private:
-    static void simulateCube(PlayerState& state, bool clicking, float gravity) {
-        state.yVel -= gravity;
-        state.yVel = std::clamp(state.yVel, -15.0f, 15.0f);
-        state.y += state.yVel;
         
-        float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
-        
-        if ((!state.isUpsideDown && state.y <= groundY) ||
-            (state.isUpsideDown && state.y >= groundY)) {
-            state.y = groundY;
-            state.yVel = 0;
-            state.isOnGround = true;
-            state.canJump = true;
-        } else {
-            state.isOnGround = false;
-        }
-        
-        if (clicking && state.canJump && state.isOnGround) {
-            float jumpVel = state.isMini ? 9.4f : JUMP_VELOCITY;
-            state.yVel = state.isUpsideDown ? -jumpVel : jumpVel;
-            state.isOnGround = false;
-            state.canJump = false;
-        }
-        
-        if (!clicking) state.canJump = true;
-    }
-    
-    static void simulateShip(PlayerState& state, bool clicking) {
-        if (clicking) {
-            state.yVel += (state.isUpsideDown ? -0.8f : 0.8f);
-        } else {
-            state.yVel -= (state.isUpsideDown ? -0.8f : 0.8f);
-        }
-        
-        float maxVel = state.isMini ? 6.0f : 8.0f;
-        state.yVel = std::clamp(state.yVel, -maxVel, maxVel);
-        state.y += state.yVel;
-        state.isOnGround = false;
-    }
-    
-    static void simulateBall(PlayerState& state, bool clicking, float gravity) {
-        state.yVel -= gravity;
-        state.yVel = std::clamp(state.yVel, -12.0f, 12.0f);
-        state.y += state.yVel;
-        
-        float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
-        
-        if ((!state.isUpsideDown && state.y <= groundY) ||
-            (state.isUpsideDown && state.y >= groundY)) {
-            state.y = groundY;
-            state.yVel = 0;
-            state.isOnGround = true;
-        } else {
-            state.isOnGround = false;
-        }
-        
-        if (clicking && state.canJump && state.isOnGround) {
-            state.isUpsideDown = !state.isUpsideDown;
-            state.yVel = state.isUpsideDown ? -6.0f : 6.0f;
-            state.canJump = false;
-        }
-        
-        if (!clicking) state.canJump = true;
-    }
-    
-    static void simulateUFO(PlayerState& state, bool clicking, float gravity) {
-        state.yVel -= gravity;
-        state.yVel = std::clamp(state.yVel, -8.0f, 8.0f);
-        state.y += state.yVel;
-        
-        float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
-        
-        if ((!state.isUpsideDown && state.y <= groundY) ||
-            (state.isUpsideDown && state.y >= groundY)) {
-            state.y = groundY;
-            state.yVel = 0;
-            state.isOnGround = true;
-        } else {
-            state.isOnGround = false;
-        }
-        
-        if (clicking && state.canJump) {
-            float boost = state.isMini ? 5.5f : UFO_BOOST;
-            state.yVel = state.isUpsideDown ? -boost : boost;
-            state.canJump = false;
-        }
-        
-        if (!clicking) state.canJump = true;
-    }
-    
-    static void simulateWave(PlayerState& state, bool clicking, float xSpeed) {
-        float waveSpeed = state.isMini ? 0.8f : 1.0f;
-        float diagonalSpeed = xSpeed * waveSpeed;
-        
-        if (clicking) {
-            state.y += state.isUpsideDown ? -diagonalSpeed : diagonalSpeed;
-        } else {
-            state.y += state.isUpsideDown ? diagonalSpeed : -diagonalSpeed;
-        }
-        state.isOnGround = false;
-    }
-    
-    static void simulateRobot(PlayerState& state, bool clicking, float gravity, float dt) {
-        if (state.isRobotJumping && clicking) {
-            state.robotJumpTime += dt;
-            if (state.robotJumpTime < 0.25f) {
-                state.yVel += 0.5f * (state.isUpsideDown ? -1 : 1);
-            }
-        }
-        
-        state.yVel -= gravity;
-        state.yVel = std::clamp(state.yVel, -15.0f, 15.0f);
-        state.y += state.yVel;
-        
-        float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
-        
-        if ((!state.isUpsideDown && state.y <= groundY) ||
-            (state.isUpsideDown && state.y >= groundY)) {
-            state.y = groundY;
-            state.yVel = 0;
-            state.isOnGround = true;
-            state.isRobotJumping = false;
-            state.canJump = true;
-        } else {
-            state.isOnGround = false;
-        }
-        
-        if (clicking && state.canJump && state.isOnGround) {
-            float jumpVel = state.isMini ? 7.5f : 10.0f;
-            state.yVel = state.isUpsideDown ? -jumpVel : jumpVel;
-            state.isRobotJumping = true;
-            state.robotJumpTime = 0;
-            state.canJump = false;
-            state.isOnGround = false;
-        }
-        
-        if (!clicking) {
-            state.isRobotJumping = false;
-            state.canJump = true;
-        }
-    }
-    
-    static void simulateSpider(PlayerState& state, bool clicking, float gravity) {
-        state.yVel -= gravity;
-        state.yVel = std::clamp(state.yVel, -15.0f, 15.0f);
-        state.y += state.yVel;
-        
-        float groundY = state.isUpsideDown ? CEILING_Y : GROUND_Y;
-        
-        if ((!state.isUpsideDown && state.y <= groundY) ||
-            (state.isUpsideDown && state.y >= groundY)) {
-            state.y = groundY;
-            state.yVel = 0;
-            state.isOnGround = true;
-            state.hasSpiderTeleported = false;
-            state.canJump = true;
-        } else {
-            state.isOnGround = false;
-        }
-        
-        if (clicking && state.canJump && state.isOnGround && !state.hasSpiderTeleported) {
-            state.isUpsideDown = !state.isUpsideDown;
-            state.y = state.isUpsideDown ? CEILING_Y : GROUND_Y;
-            state.yVel = 0;
-            state.hasSpiderTeleported = true;
-            state.canJump = false;
-        }
-        
-        if (!clicking) state.canJump = true;
-    }
-    
-    static void simulateSwing(PlayerState& state, bool clicking, float gravity) {
-        float swingGravity = clicking ? -gravity : gravity;
-        
-        state.yVel += swingGravity * 0.8f;
-        state.yVel = std::clamp(state.yVel, -8.0f, 8.0f);
-        state.y += state.yVel;
-        state.isOnGround = false;
-    }
-    
-    static void handleBoundaries(PlayerState& state) {
-        if (state.y < GROUND_Y) {
-            state.y = GROUND_Y;
-            state.yVel = 0;
-            if (!state.isUpsideDown) state.isOnGround = true;
-        }
-        if (state.y > CEILING_Y) {
-            state.y = CEILING_Y;
-            state.yVel = 0;
-            if (state.isUpsideDown) state.isOnGround = true;
-        }
+        // Boundaries
+        if (state.y < GROUND_Y) { state.y = GROUND_Y; state.yVel = 0; }
+        if (state.y > CEILING_Y) { state.y = CEILING_Y; state.yVel = 0; }
     }
 };
 
@@ -423,21 +289,10 @@ public:
     void analyze(PlayLayer* pl) {
         clear();
         
-        if (!pl) {
-            log::error("AutoPlayer: PlayLayer is null!");
-            return;
-        }
+        if (!pl || !pl->m_objects) return;
         
-        auto* objects = pl->m_objects;
-        if (!objects) {
-            log::error("AutoPlayer: No objects in level!");
-            return;
-        }
-        
-        log::info("AutoPlayer: Analyzing {} objects...", objects->count());
-        
-        for (int i = 0; i < objects->count(); i++) {
-            auto* obj = static_cast<GameObject*>(objects->objectAtIndex(i));
+        for (int i = 0; i < pl->m_objects->count(); i++) {
+            auto* obj = static_cast<GameObject*>(pl->m_objects->objectAtIndex(i));
             if (!obj) continue;
             
             LevelObject lo;
@@ -446,22 +301,21 @@ public:
             lo.y = obj->getPositionY();
             lo.rotation = obj->getRotation();
             
-            auto contentSize = obj->getContentSize();
+            auto cs = obj->getContentSize();
             float scale = obj->getScale();
-            lo.width = contentSize.width * scale * 0.85f;
-            lo.height = contentSize.height * scale * 0.85f;
+            lo.width = cs.width * scale * 0.85f;
+            lo.height = cs.height * scale * 0.85f;
             
             categorizeObject(lo);
             
             if (lo.isHazard || lo.isOrb || lo.isPad || lo.isPortal) {
                 m_allObjects.push_back(lo);
-                
                 int gridX = static_cast<int>(lo.x / GRID_SIZE);
                 m_spatialGrid[gridX].push_back(&m_allObjects.back());
             }
         }
         
-        log::info("AutoPlayer: Tracked {} important objects", m_allObjects.size());
+        log::info("AutoPlayer: Tracked {} objects", m_allObjects.size());
         g_levelAnalyzed = true;
     }
     
@@ -474,51 +328,19 @@ public:
     void categorizeObject(LevelObject& obj) {
         int id = obj.id;
         
-        if (m_hazardIDs.count(id)) {
-            obj.isHazard = true;
-        }
-        else if (m_orbTypes.count(id)) {
-            obj.isOrb = true;
-            obj.orbType = m_orbTypes[id];
-        }
-        else if (m_padTypes.count(id)) {
-            obj.isPad = true;
-            obj.orbType = m_padTypes[id];
-        }
-        else if (m_gamemodePortals.count(id)) {
-            obj.isPortal = true;
-            obj.portalGameMode = m_gamemodePortals[id];
-        }
-        else if (m_speedPortals.count(id)) {
-            obj.isPortal = true;
-            obj.isSpeedPortal = true;
-            obj.portalSpeed = m_speedPortals[id];
-        }
-        else if (id == 10) {
-            obj.isPortal = true;
-            obj.isGravityPortal = true;
-            obj.isGravityUp = false;
-        }
-        else if (id == 11) {
-            obj.isPortal = true;
-            obj.isGravityPortal = true;
-            obj.isGravityUp = true;
-        }
-        else if (id == 99) {
-            obj.isPortal = true;
-            obj.isMiniPortal = true;
-            obj.isMiniOn = false;
-        }
-        else if (id == 101) {
-            obj.isPortal = true;
-            obj.isMiniPortal = true;
-            obj.isMiniOn = true;
-        }
+        if (m_hazardIDs.count(id)) obj.isHazard = true;
+        else if (m_orbTypes.count(id)) { obj.isOrb = true; obj.orbType = m_orbTypes[id]; }
+        else if (m_padTypes.count(id)) { obj.isPad = true; obj.orbType = m_padTypes[id]; }
+        else if (m_gamemodePortals.count(id)) { obj.isPortal = true; obj.portalGameMode = m_gamemodePortals[id]; }
+        else if (m_speedPortals.count(id)) { obj.isPortal = true; obj.isSpeedPortal = true; obj.portalSpeed = m_speedPortals[id]; }
+        else if (id == 10) { obj.isPortal = true; obj.isGravityPortal = true; obj.isGravityUp = false; }
+        else if (id == 11) { obj.isPortal = true; obj.isGravityPortal = true; obj.isGravityUp = true; }
+        else if (id == 99) { obj.isPortal = true; obj.isMiniPortal = true; obj.isMiniOn = false; }
+        else if (id == 101) { obj.isPortal = true; obj.isMiniPortal = true; obj.isMiniOn = true; }
     }
     
     std::vector<LevelObject*> getObjectsInRange(float startX, float endX) {
         std::vector<LevelObject*> result;
-        
         int startGrid = static_cast<int>(startX / GRID_SIZE) - 1;
         int endGrid = static_cast<int>(endX / GRID_SIZE) + 1;
         
@@ -531,11 +353,8 @@ public:
                 }
             }
         }
-        
         return result;
     }
-    
-    bool isAnalyzed() const { return g_levelAnalyzed; }
 };
 
 // ============================================================================
@@ -544,54 +363,30 @@ public:
 
 class CollisionChecker {
 public:
-    static constexpr float PLAYER_SIZE = 30.0f;
-    static constexpr float MINI_SCALE = 0.6f;
-    
-    static bool checkCollision(const PlayerState& state, const LevelObject& obj) {
-        float playerSize = state.isMini ? PLAYER_SIZE * MINI_SCALE : PLAYER_SIZE;
+    static bool checkCollision(const PlayerState& state, const LevelObject& obj, float playerSize = 30.0f) {
+        float size = state.isMini ? playerSize * 0.6f : playerSize;
+        if (state.gameMode == GameMode::Wave) size *= 0.6f;
         
-        if (state.gameMode == GameMode::Wave) {
-            playerSize *= 0.6f;
-        }
-        
-        float halfPlayer = playerSize / 2;
-        
-        float playerLeft = state.x - halfPlayer;
-        float playerRight = state.x + halfPlayer;
-        float playerBottom = state.y - halfPlayer;
-        float playerTop = state.y + halfPlayer;
-        
-        float objLeft = obj.x - obj.width / 2;
-        float objRight = obj.x + obj.width / 2;
-        float objBottom = obj.y - obj.height / 2;
-        float objTop = obj.y + obj.height / 2;
-        
-        return !(playerRight < objLeft || playerLeft > objRight ||
-                 playerTop < objBottom || playerBottom > objTop);
+        float half = size / 2;
+        return !(state.x + half < obj.x - obj.width/2 || 
+                 state.x - half > obj.x + obj.width/2 ||
+                 state.y + half < obj.y - obj.height/2 || 
+                 state.y - half > obj.y + obj.height/2);
     }
     
     static bool checkDeath(const PlayerState& state, LevelAnalyzer* analyzer) {
         auto objects = analyzer->getObjectsInRange(state.x - 50, state.x + 50);
-        
         for (auto* obj : objects) {
-            if (obj->isHazard && checkCollision(state, *obj)) {
-                return true;
-            }
+            if (obj->isHazard && checkCollision(state, *obj)) return true;
         }
-        
-        if (state.y < 50 || state.y > 2100) {
-            return true;
-        }
-        
+        if (state.y < 50 || state.y > 2100) return true;
         return false;
     }
     
     static LevelObject* checkOrbCollision(const PlayerState& state, LevelAnalyzer* analyzer) {
         auto objects = analyzer->getObjectsInRange(state.x - 40, state.x + 40);
         for (auto* obj : objects) {
-            if (obj->isOrb && checkCollision(state, *obj)) {
-                return obj;
-            }
+            if (obj->isOrb && checkCollision(state, *obj)) return obj;
         }
         return nullptr;
     }
@@ -599,9 +394,7 @@ public:
     static LevelObject* checkPadCollision(const PlayerState& state, LevelAnalyzer* analyzer) {
         auto objects = analyzer->getObjectsInRange(state.x - 40, state.x + 40);
         for (auto* obj : objects) {
-            if (obj->isPad && checkCollision(state, *obj)) {
-                return obj;
-            }
+            if (obj->isPad && checkCollision(state, *obj)) return obj;
         }
         return nullptr;
     }
@@ -609,25 +402,9 @@ public:
     static LevelObject* checkPortalCollision(const PlayerState& state, LevelAnalyzer* analyzer) {
         auto objects = analyzer->getObjectsInRange(state.x - 40, state.x + 40);
         for (auto* obj : objects) {
-            if (obj->isPortal && checkCollision(state, *obj)) {
-                return obj;
-            }
+            if (obj->isPortal && checkCollision(state, *obj)) return obj;
         }
         return nullptr;
-    }
-};
-
-// ============================================================================
-// SEARCH NODE
-// ============================================================================
-
-struct SearchNode {
-    PlayerState state;
-    std::vector<bool> inputs;
-    float score = 0;
-    
-    bool operator<(const SearchNode& other) const {
-        return score < other.score;
     }
 };
 
@@ -635,12 +412,15 @@ struct SearchNode {
 // PATHFINDER
 // ============================================================================
 
+struct SearchNode {
+    PlayerState state;
+    std::vector<bool> inputs;
+    float score = 0;
+    bool operator<(const SearchNode& other) const { return score < other.score; }
+};
+
 class Pathfinder {
 private:
-    int m_searchDepth = 30;
-    int m_maxIterations = 5000;
-    int m_timeLimitMs = 8;
-    
     std::vector<bool> m_bestPath;
     bool m_pathFound = false;
     size_t m_usedPathIndex = 0;
@@ -651,18 +431,11 @@ public:
         return &instance;
     }
     
-    void setSearchDepth(int depth) { m_searchDepth = depth; }
-    void setMaxIterations(int iters) { m_maxIterations = iters; }
-    void setTimeLimit(int ms) { m_timeLimitMs = ms; }
-    
     bool getNextInput(const PlayerState& currentState, LevelAnalyzer* analyzer) {
+        // Use cached path if available
         if (m_pathFound && m_usedPathIndex < m_bestPath.size()) {
             bool input = m_bestPath[m_usedPathIndex++];
-            
-            if (m_usedPathIndex % 8 == 0) {
-                findPath(currentState, analyzer);
-            }
-            
+            if (m_usedPathIndex % 6 == 0) findPath(currentState, analyzer);
             return input;
         }
         
@@ -672,7 +445,6 @@ public:
             m_usedPathIndex = 1;
             return m_bestPath[0];
         }
-        
         return false;
     }
     
@@ -694,8 +466,10 @@ public:
         std::vector<bool> bestInputs;
         
         int iterations = 0;
+        const int maxIterations = 3000;
+        const int searchDepth = 25;
         
-        while (!openSet.empty() && iterations < m_maxIterations) {
+        while (!openSet.empty() && iterations < maxIterations) {
             iterations++;
             
             SearchNode current = openSet.top();
@@ -706,8 +480,8 @@ public:
                 bestInputs = current.inputs;
             }
             
-            if (current.inputs.size() >= static_cast<size_t>(m_searchDepth)) {
-                if (current.state.x > startState.x + 50) {
+            if (current.inputs.size() >= searchDepth) {
+                if (current.state.x > startState.x + 30) {
                     m_bestPath = current.inputs;
                     m_pathFound = true;
                     break;
@@ -724,9 +498,7 @@ public:
                 bool died = false;
                 for (int f = 0; f < 4 && !died; f++) {
                     PhysicsEngine::simulateFrame(next.state, clicking);
-                    handlePortals(next.state, analyzer);
-                    handlePads(next.state, analyzer);
-                    if (clicking) handleOrbs(next.state, analyzer);
+                    handleInteractions(next.state, analyzer, clicking);
                     if (CollisionChecker::checkDeath(next.state, analyzer)) died = true;
                 }
                 
@@ -737,8 +509,7 @@ public:
             }
             
             auto now = std::chrono::high_resolution_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime);
-            if (elapsed.count() > m_timeLimitMs) break;
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count() > 6) break;
         }
         
         if (!m_pathFound && !bestInputs.empty()) {
@@ -752,76 +523,51 @@ public:
         }
     }
     
-    void handlePortals(PlayerState& state, LevelAnalyzer* analyzer) {
+    void handleInteractions(PlayerState& state, LevelAnalyzer* analyzer, bool clicking) {
+        // Portals
         auto* portal = CollisionChecker::checkPortalCollision(state, analyzer);
-        if (!portal) return;
+        if (portal) {
+            if (portal->isGravityPortal) state.isUpsideDown = portal->isGravityUp;
+            else if (portal->isMiniPortal) state.isMini = portal->isMiniOn;
+            else if (portal->isSpeedPortal) state.speed = portal->portalSpeed;
+            else if (portal->isPortal) state.gameMode = portal->portalGameMode;
+        }
         
-        if (portal->isGravityPortal) {
-            state.isUpsideDown = portal->isGravityUp;
-        }
-        else if (portal->isMiniPortal) {
-            state.isMini = portal->isMiniOn;
-        }
-        else if (portal->isSpeedPortal) {
-            state.speed = portal->portalSpeed;
-        }
-        else if (portal->isPortal) {
-            state.gameMode = portal->portalGameMode;
-        }
-    }
-    
-    void handlePads(PlayerState& state, LevelAnalyzer* analyzer) {
+        // Pads
         auto* pad = CollisionChecker::checkPadCollision(state, analyzer);
-        if (!pad) return;
-        
-        float boost = 0;
-        switch (pad->orbType) {
-            case 0: boost = 12.0f; break;
-            case 1: boost = 16.0f; break;
-            case 2: boost = 20.0f; break;
-            case 3: boost = -12.0f; break;
-            case 4:
-                state.isUpsideDown = !state.isUpsideDown;
-                return;
+        if (pad) {
+            float boost = 0;
+            switch (pad->orbType) {
+                case 0: boost = 12.0f; break;
+                case 1: boost = 16.0f; break;
+                case 2: boost = 20.0f; break;
+                case 3: boost = -12.0f; break;
+                case 4: state.isUpsideDown = !state.isUpsideDown; return;
+            }
+            if (state.isUpsideDown) boost = -boost;
+            state.yVel = boost;
         }
         
-        if (state.isUpsideDown) boost = -boost;
-        state.yVel = boost;
-    }
-    
-    void handleOrbs(PlayerState& state, LevelAnalyzer* analyzer) {
-        if (state.orbCooldown > 0) return;
-        
-        auto* orb = CollisionChecker::checkOrbCollision(state, analyzer);
-        if (!orb || orb->id == state.lastOrbID) return;
-        
-        float boost = 0;
-        switch (orb->orbType) {
-            case 0: boost = 11.2f; break;
-            case 1: boost = 14.0f; break;
-            case 2: boost = 18.0f; break;
-            case 3:
-                state.isUpsideDown = !state.isUpsideDown;
-                boost = 8.0f;
-                break;
-            case 4:
-                boost = 11.2f;
-                state.isUpsideDown = !state.isUpsideDown;
-                break;
-            case 5: return;
-            case 6:
-            case 7:
-                boost = 15.0f;
-                break;
+        // Orbs (only when clicking)
+        if (clicking && state.orbCooldown <= 0) {
+            auto* orb = CollisionChecker::checkOrbCollision(state, analyzer);
+            if (orb && orb->id != state.lastOrbID) {
+                float boost = 0;
+                switch (orb->orbType) {
+                    case 0: boost = 11.2f; break;
+                    case 1: boost = 14.0f; break;
+                    case 2: boost = 18.0f; break;
+                    case 3: state.isUpsideDown = !state.isUpsideDown; boost = 8.0f; break;
+                    case 4: state.isUpsideDown = !state.isUpsideDown; boost = 11.2f; break;
+                    case 5: return;
+                    case 6: case 7: boost = 15.0f; break;
+                }
+                if (state.isUpsideDown && orb->orbType != 3 && orb->orbType != 4) boost = -boost;
+                state.yVel = boost;
+                state.orbCooldown = 0.15f;
+                state.lastOrbID = orb->id;
+            }
         }
-        
-        if (state.isUpsideDown && orb->orbType != 3 && orb->orbType != 4) {
-            boost = -boost;
-        }
-        
-        state.yVel = boost;
-        state.orbCooldown = 0.15f;
-        state.lastOrbID = orb->id;
     }
     
     void reset() {
@@ -832,7 +578,7 @@ public:
 };
 
 // ============================================================================
-// CURRENT STATE TRACKER
+// CURRENT STATE
 // ============================================================================
 
 static PlayerState g_currentState;
@@ -843,7 +589,6 @@ void updatePlayerState(PlayerObject* player) {
     g_currentState.x = player->getPositionX();
     g_currentState.y = player->getPositionY();
     g_currentState.yVel = player->m_yVelocity;
-    
     g_currentState.isUpsideDown = player->m_isUpsideDown;
     g_currentState.isMini = player->m_vehicleSize != 1.0f;
     g_currentState.isOnGround = player->m_isOnGround;
@@ -857,11 +602,11 @@ void updatePlayerState(PlayerObject* player) {
     else if (player->m_isSwing) g_currentState.gameMode = GameMode::Swing;
     else g_currentState.gameMode = GameMode::Cube;
     
-    float speed = player->m_playerSpeed;
-    if (speed <= 0.8f) g_currentState.speed = SpeedType::Slow;
-    else if (speed <= 0.95f) g_currentState.speed = SpeedType::Normal;
-    else if (speed <= 1.05f) g_currentState.speed = SpeedType::Fast;
-    else if (speed <= 1.15f) g_currentState.speed = SpeedType::Faster;
+    float spd = player->m_playerSpeed;
+    if (spd <= 0.8f) g_currentState.speed = SpeedType::Slow;
+    else if (spd <= 0.95f) g_currentState.speed = SpeedType::Normal;
+    else if (spd <= 1.05f) g_currentState.speed = SpeedType::Fast;
+    else if (spd <= 1.15f) g_currentState.speed = SpeedType::Faster;
     else g_currentState.speed = SpeedType::Fastest;
 }
 
@@ -872,28 +617,28 @@ void updatePlayerState(PlayerObject* player) {
 class $modify(AutoPlayLayer, PlayLayer) {
     
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
-        if (!PlayLayer::init(level, useReplay, dontCreateObjects))
-            return false;
+        if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
         
         log::info("AutoPlayer: PlayLayer init");
         g_levelAnalyzed = false;
         g_isClicking = false;
-        
         return true;
     }
     
     void setupHasCompleted() {
         PlayLayer::setupHasCompleted();
-        
-        log::info("AutoPlayer: Setup completed, analyzing level...");
         LevelAnalyzer::get()->analyze(this);
     }
     
     void resetLevel() {
         PlayLayer::resetLevel();
         
-        log::info("AutoPlayer: Level reset");
-        g_isClicking = false;
+        // Release any held input
+        if (g_isClicking) {
+            GJBaseGameLayer::get()->handleButton(false, 1, true);
+            g_isClicking = false;
+        }
+        
         Pathfinder::get()->reset();
         
         if (!g_levelAnalyzed) {
@@ -912,25 +657,28 @@ class $modify(AutoPlayLayer, PlayLayer) {
         
         bool shouldClick = Pathfinder::get()->getNextInput(g_currentState, LevelAnalyzer::get());
         
-        if (shouldClick && !g_isClicking) {
-            m_player1->pushButton(PlayerButton::Jump);
-            g_isClicking = true;
-        }
-        else if (!shouldClick && g_isClicking) {
-            m_player1->releaseButton(PlayerButton::Jump);
-            g_isClicking = false;
+        // Use handleButton for proper input simulation
+        if (shouldClick != g_isClicking) {
+            GJBaseGameLayer::get()->handleButton(shouldClick, 1, true);
+            g_isClicking = shouldClick;
+            
+            if (g_debugEnabled) {
+                log::info("AutoPlayer: {} at x={:.1f}", shouldClick ? "CLICK" : "RELEASE", g_currentState.x);
+            }
         }
     }
     
     void levelComplete() {
         PlayLayer::levelComplete();
-        
         log::info("AutoPlayer: Level completed!");
         Notification::create("AutoPlayer: Level Complete!", NotificationIcon::Success)->show();
     }
     
     void onQuit() {
-        g_isClicking = false;
+        if (g_isClicking) {
+            GJBaseGameLayer::get()->handleButton(false, 1, true);
+            g_isClicking = false;
+        }
         g_levelAnalyzed = false;
         Pathfinder::get()->reset();
         PlayLayer::onQuit();
@@ -947,13 +695,12 @@ class $modify(CCKeyboardDispatcher) {
         if (down && !repeat && key == KEY_F8) {
             g_autoPlayerEnabled = !g_autoPlayerEnabled;
             
-            log::info("AutoPlayer: Toggled to {}", g_autoPlayerEnabled ? "ON" : "OFF");
+            log::info("AutoPlayer: {}", g_autoPlayerEnabled ? "ENABLED" : "DISABLED");
             
-            if (!g_autoPlayerEnabled) {
-                // Release button when disabling
-                auto* pl = PlayLayer::get();
-                if (pl && pl->m_player1 && g_isClicking) {
-                    pl->m_player1->releaseButton(PlayerButton::Jump);
+            if (!g_autoPlayerEnabled && g_isClicking) {
+                auto* gj = GJBaseGameLayer::get();
+                if (gj) {
+                    gj->handleButton(false, 1, true);
                     g_isClicking = false;
                 }
             }
@@ -968,14 +715,8 @@ class $modify(CCKeyboardDispatcher) {
         
         if (down && !repeat && key == KEY_F9) {
             g_debugEnabled = !g_debugEnabled;
-            
-            log::info("AutoPlayer: Debug toggled to {}", g_debugEnabled ? "ON" : "OFF");
-            
-            Notification::create(
-                g_debugEnabled ? "Debug: ON" : "Debug: OFF",
-                NotificationIcon::Info
-            )->show();
-            
+            log::info("AutoPlayer Debug: {}", g_debugEnabled ? "ON" : "OFF");
+            Notification::create(g_debugEnabled ? "Debug: ON" : "Debug: OFF", NotificationIcon::Info)->show();
             return true;
         }
         
@@ -991,6 +732,6 @@ $on_mod(Loaded) {
     log::info("========================================");
     log::info("AutoPlayer Mod Loaded!");
     log::info("Press F8 to toggle AutoPlayer");
-    log::info("Press F9 to toggle Debug View");
+    log::info("Press F9 to toggle Debug (shows clicks)");
     log::info("========================================");
 }
