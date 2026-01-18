@@ -2,30 +2,86 @@
   "geode": "4.10.0",
   "gd": { "win": "2.2074" },
   "id": "developer.gdbot",
-  "name": "GD AutoBot",
+  "name": "GD AutoBot Trainer",
   "version": "v1.0.0",
   "developer": "Developer",
-  "description": "Autoplayer with trajectory-based planning, solids, learning, settings UI",
+  "description": "Speedhack training bot that learns by mutating inputs and replays the best path at normal speed",
   "settings": {
-    "enabled": { "name": "Enabled", "type": "bool", "default": false },
-
-    "beam-width": { "name": "Beam Width", "type": "int", "default": 64, "min": 8, "max": 256 },
-    "horizon-frames": { "name": "Horizon (frames)", "type": "int", "default": 240, "min": 30, "max": 720 },
-    "step-frames": { "name": "Step (frames)", "type": "int", "default": 3, "min": 1, "max": 10 },
-    "replan-every": { "name": "Replan Every (frames)", "type": "int", "default": 6, "min": 1, "max": 30 },
-    "time-budget-ms": { "name": "Planner Budget (ms)", "type": "int", "default": 4, "min": 1, "max": 12 },
-
-    "tap-frames": { "name": "Tap Length (frames)", "type": "int", "default": 2, "min": 1, "max": 10 },
-
-    "player-hitbox-scale": { "name": "Player Hitbox Scale", "type": "float", "default": 0.9, "min": 0.5, "max": 1.3 },
-    "obj-hitbox-scale": { "name": "Object Hitbox Scale", "type": "float", "default": 1.0, "min": 0.7, "max": 1.6 },
-    "safe-margin": { "name": "Safe Margin (px)", "type": "float", "default": 2.0, "min": 0.0, "max": 12.0 },
-
-    "debug-hud": { "name": "Debug HUD", "type": "bool", "default": true },
-    "debug-draw": { "name": "Debug Draw", "type": "bool", "default": false },
-
-    "learn": { "name": "Learn From Deaths (session)", "type": "bool", "default": true },
-    "learn-bin": { "name": "Learning Bin Size", "type": "float", "default": 60.0, "min": 10.0, "max": 300.0 },
-    "learn-strength": { "name": "Learning Strength", "type": "float", "default": 1.0, "min": 0.0, "max": 5.0 }
+    "enabled": {
+      "name": "Enabled",
+      "description": "Enable the bot",
+      "type": "bool",
+      "default": false
+    },
+    "mode": {
+      "name": "Mode",
+      "description": "0=Off, 1=Train+Verify",
+      "type": "int",
+      "default": 1,
+      "min": 0,
+      "max": 1
+    },
+    "train-timescale": {
+      "name": "Train Speed (timescale)",
+      "description": "Higher = faster attempts, but may reduce determinism",
+      "type": "float",
+      "default": 3.0,
+      "min": 1.0,
+      "max": 10.0
+    },
+    "restart-delay-frames": {
+      "name": "Restart Delay (frames)",
+      "description": "Frames to wait after death before resetting",
+      "type": "int",
+      "default": 10,
+      "min": 0,
+      "max": 120
+    },
+    "max-frames": {
+      "name": "Max Frames Per Attempt",
+      "description": "Stops runaway attempts; larger for long levels",
+      "type": "int",
+      "default": 300000,
+      "min": 10000,
+      "max": 1000000
+    },
+    "mutation-window": {
+      "name": "Mutation Window (frames)",
+      "description": "Mutations concentrate around death frame ± window",
+      "type": "int",
+      "default": 240,
+      "min": 30,
+      "max": 2000
+    },
+    "mutation-rate": {
+      "name": "Mutation Rate",
+      "description": "Probability of flipping a frame input inside the mutation window",
+      "type": "float",
+      "default": 0.02,
+      "min": 0.0,
+      "max": 0.5
+    },
+    "seed-tap-rate": {
+      "name": "Seed Tap Density",
+      "description": "How often random taps are inserted in a new genome (lower = fewer taps)",
+      "type": "float",
+      "default": 0.003,
+      "min": 0.0005,
+      "max": 0.05
+    },
+    "tap-length-frames": {
+      "name": "Tap Length (frames)",
+      "description": "How long each inserted tap holds",
+      "type": "int",
+      "default": 2,
+      "min": 1,
+      "max": 20
+    },
+    "log-status": {
+      "name": "Log Status",
+      "description": "Print periodic training status to console",
+      "type": "bool",
+      "default": true
+    }
   }
 }
